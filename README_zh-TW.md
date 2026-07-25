@@ -27,6 +27,14 @@
 > **這是 `podman` 分支** — 包含 Podman Compose 單節點部署方案。<br/>
 > 需要 Kubernetes？切換到 [`k3s` 分支](../../tree/k3s)。<br/>
 > 需要概覽？請見 [`main` 分支](../../tree/main)。
+>
+> **⚠️ Podman 分支的運維模型（與 K3s 不同）:**
+> 整個 stack 100% 容器化 — Hermes Agent 二進位是上游 image
+> `docker.io/nousresearch/hermes-agent`,不是 Woowtech 自產程式碼,因此**主機上沒有任何要跑的東西**。
+> 下方「瀏覽器終端(ttyd)」章節描述的是 K3s 部署(`11-terminal.yaml`);
+> **本分支不部署 ttyd**。Shell 入口是**主機 OpenSSH → `podman exec -it hermes-agent bash`**。
+> Hermes 內建 Dashboard TUI(`HERMES_DASHBOARD_TUI=1`)在 `http://<host>:19119`
+> 是**應用內建**的管理員終端,不是系統 shell。
 
 ---
 

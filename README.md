@@ -27,6 +27,15 @@
 > **This is the `podman` branch** — contains Podman Compose deployment for single-node setups.<br/>
 > Looking for Kubernetes? Switch to the [`k3s` branch](../../tree/k3s).<br/>
 > Looking for an overview? See the [`main` branch](../../tree/main).
+>
+> **⚠️ Podman-branch operational model (differs from K3s):**
+> The stack is 100% containerized — the Hermes Agent binary is the upstream image
+> `docker.io/nousresearch/hermes-agent`, not Woowtech-authored code, so there is
+> **nothing to run on the host**. The "Browser Terminal (ttyd)" section below
+> describes the K3s deployment (`11-terminal.yaml`); **ttyd is not deployed in
+> this branch**. Shell access is **host OpenSSH → `podman exec -it hermes-agent bash`**.
+> Hermes's own built-in Dashboard TUI (`HERMES_DASHBOARD_TUI=1`) at
+> `http://<host>:19119` is an **app-internal** admin terminal, not a system shell.
 
 ---
 
