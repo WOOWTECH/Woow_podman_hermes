@@ -2,6 +2,32 @@
 
 All notable changes to the WoowTech Hermes Agent deployment package.
 
+## [0.17.0] - 2026-07-30
+
+### BREAKING: single-container architecture
+
+### Removed
+- `hermes-webui` service (image `ghcr.io/nesquena/hermes-webui:latest`, port `18787`) from `deploy/podman/podman-compose.yml`
+- `WEBUI_PASSWORD` from `deploy/podman/.env.example`
+- `deploy/podman/apply_branding.py` + `deploy/podman/icons/` (webui-only branding assets)
+- `branding/` (all sub-directories: `apporo/`, `woowtech/`, `template-icons/`) — apply_branding scripts patched WebUI internals; obsolete
+- deploy.sh: dropped steps that installed the agent source into WebUI venv, waited for WebUI healthy, patched WebUI branding, and enabled skills via WebUI API
+
+### Changed
+- Dashboard TUI (port `19119`) is now the ONLY chat surface — runs in `hermes-agent` container with full CLI tool access (ffmpeg / edge-tts / rclone / playwright / node / hermes)
+- Port map is now `19119` (Dashboard) + `18642` (Gateway); `18787` no longer exposed
+- README (EN + zh-TW) rewritten to reflect single-container architecture
+
+### Preserved
+- `hermes-data` named volume (agent-only mount; nothing lost)
+- PostgreSQL data, Redis data
+
+### Migration
+From v0.16.x: `podman-compose down && git pull && podman-compose up -d`. `.env` `WEBUI_PASSWORD` line can be deleted. Existing CF tunnel WebUI hostname route (`*-hermes.woowtech.io` → `:18787`) should be removed from the CF dashboard; keep the Dashboard hostname route.
+
+### Rationale
+Dashboard TUI (xterm.js REPL of `hermes chat` inside hermes-agent) is a superset of WebUI chat: same LLM + skills + MCP AND full CLI tool access. WebUI had almost no video/CLI tools (base image ships only `python3+pip+curl+officecli`), forcing a container-choice problem for any video-pipeline/CLI-heavy work. Single-container removes the split.
+
 ## [0.15.1] - 2026-07-13
 
 ### Changed

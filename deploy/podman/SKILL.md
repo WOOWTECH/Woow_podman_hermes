@@ -5,19 +5,18 @@
 bash deploy.sh    # 首次生成 .env，編輯 MINIMAX_API_KEY 後再執行
 ```
 
-## 13 步自動化
-1. 生成 .env | 2. 啟動容器 | 3. 等待 Gateway | 4. Agent source 複製
-5. TUI 權限 | 6. **TUI PVC 永久修復** (`HERMES_TUI_DIR`) | 7. **.env API key 寫入**
-8. tmux | 9. Superpowers | 10. Config 優化
-11. 等待 WebUI | 12. 品牌注入 | 13. Skills 啟用
+## 10 步自動化（v0.17.0，單容器）
+1. 生成 .env | 2. 啟動容器 | 3. Hermes CLI + 清理 | 4. ddgs 網搜
+5. OfficeCLI | 6. TUI PVC 權限（`HERMES_TUI_DIR`） | 7. tmux
+8. Superpowers | 9. Config 優化 | 10. 清 cache
 
-## 雙 GUI
-- WebUI http://localhost:18787 (對話/排程/技能)
-- Dashboard http://localhost:19119 (設定/API Keys/Terminal TUI)
+## 唯一 GUI — Dashboard
+- Dashboard http://localhost:19119 (Chat TUI + 設定 + API Keys + MCP + Terminal)
+
+Chat TUI 為唯一 chat 介面；跑在 hermes-agent 容器中，具備完整 ffmpeg / edge-tts / rclone / playwright / node / hermes CLI。
 
 ## 注意
 - Image 需全名: `docker.io/library/postgres:15`
-- 容器間通訊用 DNS: `GATEWAY_HEALTH_URL=http://hermes-agent:8642`
 - 首次 config 可能是 anthropic，deploy.sh Step 8 自動修正為 MiniMax
 - Token Plan key 使用 `sk-cp-` prefix
 
@@ -27,7 +26,6 @@ bash deploy.sh    # 首次生成 .env，編輯 MINIMAX_API_KEY 後再執行
 |------|------|----------|
 | Dashboard TUI "No API key configured" | TUI 讀取 `.env` 檔案，非容器環境變數 | 部署腳本寫入 `MINIMAX_API_KEY` 到 `.env` |
 | Dashboard TUI 重啟後壞掉 | image layer `ui-tui/` 權限被重設 | `HERMES_TUI_DIR=/opt/data/ui-tui` 從 PVC 讀取 |
-| WebUI model 與 Dashboard 不同步 | 獨立 model 設定 | WebUI Chat 用 `/model` 指令 |
 
 ## 已驗證 K3s 對照 100/100 一致
 
@@ -39,7 +37,7 @@ bash deploy.sh    # 首次生成 .env，編輯 MINIMAX_API_KEY 後再執行
 
 ### 排程配置（5 個 Cron Jobs）
 
-在 WebUI 左側 Cron 頁面建立：
+在 Dashboard 左側 Cron 頁面建立（或以 `hermes cron add`）：
 
 | 名稱 | 頻率 | 模式 | 腳本 |
 |------|------|------|------|
@@ -110,10 +108,10 @@ MIN_LENGTHS = {
 草稿搬移: /opt/data/cron/output/move_drafts.log
 ```
 
-### Cloudflare Tunnel 注意
+### Cloudflare Tunnel 注意（K3s 對照）
 
-確保 ingress 的 service FQDN 指向**正確的 K8s namespace**：
+v0.17.0 起 K3s 側只需暴露 Dashboard：
 ```
-✅ hermes-webui-svc.torchmedia-hermes.svc.cluster.local:8787
-❌ hermes-webui-svc.torchmedia.svc.cluster.local:8787  ← 錯誤命名空間
+hostname: <tenant>-dashboard.woowtech.io → hermes-agent-svc:9119
 ```
+不再有 `<tenant>-hermes.woowtech.io` → `hermes-webui-svc:8787` 這條 route。

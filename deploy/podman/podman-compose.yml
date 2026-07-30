@@ -1,7 +1,7 @@
 # =============================================================
 # Hermes Agent Stack — Podman Compose (Pod Mode)
 # =============================================================
-# Agent + Dashboard + WebUI 共享 localhost (Podman pod)
+# Agent + Dashboard 共享 localhost (Podman pod)
 # PostgreSQL + Redis 同 pod
 #
 # 用法:
@@ -9,9 +9,10 @@
 #   podman-compose up -d
 #
 # 端口:
-#   8787 — WebUI (日常使用)
-#   9119 — Dashboard (管理設定 + Terminal TUI)
+#   9119 — Dashboard (Chat TUI + Config + MCP + Terminal)
 #   8642 — Gateway API (OpenAI-compatible)
+#
+# v0.17.0 — 移除 hermes-webui sidecar，統一由 Dashboard TUI 作為唯一 chat 介面
 # =============================================================
 
 x-podman:
@@ -67,49 +68,7 @@ services:
           memory: 6G
           cpus: "3.0"
 
-  # ── 2. Hermes WebUI (:8787) ──
-  hermes-webui:
-    image: ghcr.io/nesquena/hermes-webui:latest
-    container_name: hermes-webui
-    ports:
-      - "18787:8787"
-    restart: unless-stopped
-    depends_on:
-      hermes-agent:
-        condition: service_healthy
-    tty: true
-    environment:
-      - HERMES_WEBUI_HOST=0.0.0.0
-      - HERMES_WEBUI_PORT=8787
-      - HERMES_WEBUI_STATE_DIR=/home/hermeswebui/.hermes/webui
-      - HERMES_HOME=/home/hermeswebui/.hermes
-      - GATEWAY_HEALTH_URL=http://hermes-agent:8642
-      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - WANTED_UID=${HERMES_UID:-1000}
-      - WANTED_GID=${HERMES_GID:-1000}
-      - HERMES_WEBUI_PASSWORD=${WEBUI_PASSWORD:-admin}
-      - HERMES_WEBUI_CHAT_BACKEND=gateway
-      - HERMES_WEBUI_GATEWAY_BASE_URL=http://hermes-agent:8642
-      - HERMES_WEBUI_GATEWAY_API_KEY=${API_SERVER_KEY}
-      - PATH=/home/hermeswebui/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    volumes:
-      - hermes-data:/home/hermeswebui/.hermes
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8787/ || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 120s
-    # NOTE: podman-compose may not apply deploy.resources.limits.
-    # To enforce limits manually: podman update --memory 4g --cpus 2.0 hermes-webui
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: "2.0"
-
-  # ── 3. PostgreSQL 15 ──
+  # ── 2. PostgreSQL 15 ──
   postgresql:
     image: docker.io/library/postgres:15
     container_name: hermes-postgresql
@@ -128,7 +87,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── 4. Redis 7 ──
+  # ── 3. Redis 7 ──
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: hermes-redis
@@ -151,6 +110,3 @@ volumes:
 # Port mappings (added for host access)
 # Workaround: podman-compose 1.0.6 doesn't map ports in x-podman in_pod mode
 # Use explicit port-forward instead
-
-# Note: hermes-webui needs custom command to inject branding before server.py
-# Override in environment or use init script approach

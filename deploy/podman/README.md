@@ -13,34 +13,31 @@ nano .env   # 填入 MINIMAX_API_KEY
 bash deploy.sh
 ```
 
-## 架構
+## 架構（v0.17.0 起單容器）
 
-所有容器在同一個 Podman Pod 中，共享 localhost：
+Dashboard TUI 為唯一 chat 介面；沒有獨立 WebUI sidecar。
 
 ```
 Podman Pod: hermes
-├── hermes-agent      :8642 (Gateway) + :9119 (Dashboard + TUI)
-├── hermes-webui      :8787 (Web 介面)
+├── hermes-agent      :8642 (Gateway) + :9119 (Dashboard + Chat TUI)
 ├── postgresql        :5432
 └── redis             :6379
 ```
 
-## 雙 GUI
+## 唯一 GUI — Dashboard
 
 | 介面 | URL | 用途 |
 |------|-----|------|
-| WebUI | http://localhost:8787 | 對話/排程/技能/SOUL 性格 |
-| Dashboard | http://localhost:9119 | Config/API Keys/MCP/Model 切換/Terminal |
+| Dashboard | http://localhost:19119 | Chat TUI + Config + API Keys + MCP + Model 切換 + Terminal |
+
+Chat TUI 跑在 hermes-agent 容器中，完整存取 ffmpeg / edge-tts / rclone / playwright / node / hermes CLI。
 
 ## Cloudflare Tunnel 整合
 
-如已有 CF tunnel，加入路由：
-```bash
-# WebUI
-hostname: name-hermes.woowtech.io → http://localhost:8787
+如已有 CF tunnel，加入單一路由：
 
-# Dashboard
-hostname: name-dashboard.woowtech.io → http://localhost:9119
+```
+hostname: name-dashboard.woowtech.io → http://localhost:19119
 ```
 
 ## 管理
@@ -50,5 +47,12 @@ podman-compose ps          # 查看狀態
 podman-compose logs -f     # 查看日誌
 podman-compose restart     # 重啟
 podman-compose down        # 停止
-podman-compose down -v     # 停止並刪除資料
+podman-compose down -v     # 停止並刪除資料（會清 PVC）
 ```
+
+## v0.16.x → v0.17.0 遷移
+
+- `hermes-webui` 容器已移除；port `18787` 不再開放
+- `.env` 中的 `WEBUI_PASSWORD` 可以刪除（已不再讀取）
+- 對外只保留 Dashboard host name；舊的 WebUI CF tunnel route 可拆除
+- PVC 資料 (`hermes-data`) 完全保留（agent 沿用同一 volume）

@@ -2,7 +2,7 @@
   <img src="branding/template-icons/favicon.svg" width="120" alt="Hermes Agent Logo" />
 
   <h1>WoowTech Hermes Agent</h1>
-  <p><strong>企業級 AI 智慧助手 — 雙介面、47 個 CLI 工具、93 個技能、多實例白標部署</strong></p>
+  <p><strong>企業級 AI 智慧助手 — Podman 部署</strong><br/><sub>單容器架構（v0.17.0 起）；47 個 CLI 工具、93 個技能、Dashboard TUI 唯一 chat 介面</sub></p>
 
   <p>
     <img src="https://img.shields.io/badge/Hermes_Agent-v0.19.0-blue?style=flat-square" alt="Hermes Agent v0.19.0" />
@@ -36,6 +36,9 @@
 > Hermes 內建 Dashboard TUI(`HERMES_DASHBOARD_TUI=1`)在 `http://<host>:19119`
 > 是**應用內建**的管理員終端,不是系統 shell。
 
+> **遷移說明（v0.17.0）：** `hermes-webui` sidecar 已移除，Dashboard TUI 已成為唯一 chat 介面。
+> 從 v0.16.x 或更早版本升級請參閱 [CHANGELOG](CHANGELOG.md) 的 BREAKING 說明與回滾指引。
+
 ---
 
 ## 目錄
@@ -50,7 +53,6 @@
 - [配置說明](#配置說明)
 - [自訂 Docker 映像](#自訂-docker-映像)
 - [多實例部署](#多實例部署)
-- [白標品牌](#白標品牌)
 - [CLI 工具參考](#cli-工具參考)
 - [技能目錄](#技能目錄)
 - [API 參考](#api-參考)
@@ -64,7 +66,7 @@
 
 ## 總覽
 
-**WoowTech Hermes Agent** 是基於 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) 和 [Hermes WebUI](https://github.com/nesquena/hermes-webui) 打造的企業級自建 AI 助手平台。提供完整的 AI 工作空間：雙圖形介面（Chat WebUI + Dashboard）、47 個預裝 CLI 工具、93 個 AI 技能、多 LLM 支援，可部署於 K3s Kubernetes 或 Podman，並支援自動化白標品牌配置。
+**WoowTech Hermes Agent** 是基於 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) 打造的企業級自建 AI 助手平台。提供完整的 AI 工作空間：單一 Dashboard TUI chat 介面（agent 容器內以 xterm.js 執行 `hermes chat` REPL）、47 個預裝 CLI 工具、93 個 AI 技能、多 LLM 支援，可透過 Podman Compose 部署於單一主機。
 
 ### 為什麼選擇 WoowTech Hermes？
 
@@ -77,23 +79,13 @@
 | Kubernetes 部署複雜 | **一鍵部署** `deploy.sh` + 黃金配置 |
 | 僅支援單租戶 | **多實例隔離**，命名空間隔離 + 每租戶獨立品牌 |
 
-### 線上實例
-
-| 實例 | 網域 | 用途 |
-|------|------|------|
-| WoowTech | `woowtech-hermes.woowtech.io` | Odoo 18 ERP 顧問 |
-| Apporo Alan | `apporoalan-hermes.woowtech.io` | ESG/WELL/LEED 健康建築顧問 |
-| Johhan Lin | `johhanlin-hermes.woowtech.io` | HSBC 外匯交易顧問 |
-| Alan Lin | `alanlin-hermes.woowtech.io` | 通用 AI 助手 |
-| TorchMedia | `torchmedia-hermes.woowtech.io` | 通用 AI 助手 |
-
 ---
 
 ## 核心功能
 
 | 功能 | 說明 |
 |------|------|
-| **雙圖形介面** | WebUI (:8787) 對話介面 + Dashboard (:9119) 150+ 設定、Terminal TUI |
+| **Dashboard TUI** | Dashboard (:19119) — chat（xterm.js REPL 執行 `hermes chat`）+ 150+ 設定 + MCP + Terminal，皆在 agent 容器內運行 |
 | **47 個 CLI 工具** | curl, git, jq, yq, rg, fd, gcloud, gh, pandoc, ffmpeg, yt-dlp, nmap 等 |
 | **93 個 AI 技能** | 19 類別：軟體開發、創意設計、MLOps、Odoo ERP、學術研究、媒體 |
 | **多 LLM 支援** | MiniMax M2.7（主要）, GPT-5.x/4.x via OpenRouter, Claude, GLM |
@@ -102,8 +94,7 @@
 | **持久化記憶** | SOUL.md（身份）、USER.md（偏好）、MEMORY.md（學習上下文） |
 | **看板 + 任務** | 專案看板、待辦清單、排程任務管理 |
 | **數據分析** | Token 用量、模型分布、費用追蹤 |
-| **Gateway API** | OpenAI 相容 REST API，端口 8642 |
-| **白標品牌** | 每實例自訂 Logo、顏色、標題 |
+| **Gateway API** | OpenAI 相容 REST API，端口 18642 |
 | **Cloudflare Tunnel** | 自動 HTTPS，無需端口轉發或憑證 |
 
 ---
@@ -122,10 +113,9 @@ graph TB
         Tunnel["Cloudflare Tunnel<br/>*.woowtech.io"]
     end
 
-    subgraph Cluster["K3s 叢集 / Podman 主機"]
+    subgraph Cluster["Podman 主機"]
         subgraph Pod["Hermes Pod"]
-            WebUI["Hermes WebUI<br/>:8787 對話介面"]
-            Agent["Hermes Agent<br/>:8642 Gateway API<br/>:9119 Dashboard"]
+            Agent["Hermes Agent<br/>:8642 Gateway API<br/>:9119 Dashboard + /chat TUI"]
             PG["PostgreSQL 15<br/>:5432"]
             Redis["Redis 7<br/>:6379"]
         end
@@ -144,9 +134,7 @@ graph TB
     end
 
     User -->|HTTPS| Tunnel
-    Tunnel -->|"name-hermes.woowtech.io"| WebUI
     Tunnel -->|"name-dashboard.woowtech.io"| Agent
-    WebUI -->|Gateway API :8642| Agent
     Agent --> PG
     Agent --> Redis
     Agent -->|API| MM
@@ -159,29 +147,25 @@ graph TB
 
 ```mermaid
 graph TB
-    subgraph CF["Cloudflare DNS (*.woowtech.io)"]
+    subgraph CF["Cloudflare DNS (*.example.com)"]
         DNS["萬用 DNS"]
     end
 
-    subgraph K3s["K3s 叢集（4 節點，1024 cores，502Gi RAM）"]
-        subgraph NS1["namespace: hermes"]
-            I1["WoowTech Hermes<br/>Odoo 18 ERP 顧問"]
+    subgraph Hosts["多台 Podman 主機"]
+        subgraph H1["host: <tenant-a>-hermes"]
+            I1["Tenant A Hermes"]
         end
-        subgraph NS2["namespace: apporoalan-hermes"]
-            I2["Apporo Hermes<br/>ESG/WELL/LEED 顧問"]
+        subgraph H2["host: <tenant-b>-hermes"]
+            I2["Tenant B Hermes"]
         end
-        subgraph NS3["namespace: alanlin-hermes"]
-            I3["Alan Lin Hermes<br/>通用 AI 助手"]
-        end
-        subgraph NS4["namespace: torchmedia-hermes"]
-            I4["TorchMedia Hermes<br/>通用 AI 助手"]
+        subgraph HN["host: <tenant-n>-hermes"]
+            IN["Tenant N Hermes"]
         end
     end
 
     DNS --> I1
     DNS --> I2
-    DNS --> I3
-    DNS --> I4
+    DNS --> IN
 ```
 
 ### 請求流程
@@ -190,20 +174,20 @@ graph TB
 sequenceDiagram
     participant U as 使用者
     participant CF as Cloudflare Tunnel
-    participant WUI as WebUI :8787
-    participant GW as Agent Gateway :8642
+    participant DASH as Dashboard :19119 (/chat xterm TUI)
+    participant GW as Agent Gateway :18642
     participant LLM as MiniMax M2.7
 
     U->>CF: HTTPS 請求
-    CF->>WUI: 路由到 WebUI
-    U->>WUI: 登入（僅密碼）
-    U->>WUI: 發送訊息
-    WUI->>GW: POST /v1/runs {model, input}
+    CF->>DASH: 路由到 Dashboard
+    U->>DASH: 登入（Basic auth）
+    U->>DASH: 於 /chat TUI 發送訊息
+    DASH->>GW: hermes chat → gateway call
     GW->>GW: _resolve_route(model)
     GW->>LLM: 模型推論
     LLM-->>GW: 串流 tokens
-    GW-->>WUI: SSE 串流
-    WUI-->>U: 渲染對話訊息
+    GW-->>DASH: SSE 串流 → xterm.js 渲染
+    DASH-->>U: 終端渲染對話訊息
 ```
 
 ### Docker 映像層結構
@@ -240,9 +224,9 @@ graph LR
 
     subgraph Podman["Podman 單節點"]
         direction TB
-        P_POD["Podman Pod（4 容器）"]
+        P_POD["Podman Pod（3 容器）"]
         P_VOL["具名磁碟區"]
-        P_PORT["端口映射<br/>18787 / 19119 / 18642"]
+        P_PORT["端口映射<br/>19119 / 18642"]
         P_POD --> P_VOL
         P_POD --> P_PORT
     end
@@ -254,9 +238,8 @@ graph LR
 
 | 元件 | 映像 | 端口 | 用途 | K8s Manifest |
 |------|------|------|------|-------------|
-| **Hermes Agent** | `nousresearch/hermes-agent:latest` | 8642（Gateway）, 9119（Dashboard） | AI 引擎、工具執行、Gateway API、Dashboard + TUI | `06-hermes.yaml` |
-| **Hermes WebUI** | `ghcr.io/nesquena/hermes-webui:latest` | 8787 | 對話介面、技能、記憶、看板、數據分析 | `06-hermes.yaml`（sidecar） |
-| **瀏覽器終端** | `ubuntu:24.04` + ttyd 1.7.7 | 7681 | 瀏覽器 TUI — kubectl exec 進入 hermes-agent shell | `11-terminal.yaml` |
+| **Hermes Agent** | `nousresearch/hermes-agent:latest` | 8642（Gateway）、9119（Dashboard + /chat TUI） | AI 引擎、工具執行、Gateway API、Dashboard 及 xterm.js chat TUI | `06-hermes.yaml` |
+| **瀏覽器終端** | `ubuntu:24.04` + ttyd 1.7.7 | 7681 | 瀏覽器 TUI — kubectl exec 進入 hermes-agent shell（僅 K3s） | `11-terminal.yaml` |
 | **PostgreSQL** | `postgres:15` | 5432 | 資料持久化（對話、記憶、設定） | `04-postgresql.yaml` |
 | **Redis** | `redis:7-alpine` | 6379 | 快取、Session 狀態 | `05-redis.yaml` |
 | **Cloudflared** | `cloudflare/cloudflared:latest` | — | Cloudflare Tunnel，提供 HTTPS 存取 | `08-cloudflared.yaml` |
@@ -265,13 +248,16 @@ graph LR
 
 ## 服務 URL
 
-WoowTech Hermes 透過 Cloudflare Tunnel 對外暴露三個服務：
+Podman 部署對外暴露兩個服務（可搭配 Cloudflare Tunnel 提供 HTTPS）：
 
 | 服務 | URL | 端口 | 用途 |
 |------|-----|------|------|
-| **WebUI**（聊天） | `https://<PREFIX>-hermes.woowtech.io` | 8787 | 主要使用者介面 — 對話、技能、記憶、看板 |
-| **Dashboard**（管理） | `https://<PREFIX>-dashboard.woowtech.io` | 9119 | Agent 管理 — 設定、MCP、模型、日誌、系統 |
-| **Terminal**（終端） | `https://<PREFIX>-hermes-terminal.woowtech.io` | 7681 | 瀏覽器 bash shell，直接操作 hermes-agent 容器 |
+| **Dashboard**（管理 + Chat TUI） | `http://<host>:19119` | 19119 → 9119 | Agent 管理（設定、MCP、模型、日誌、系統）+ `/chat` 內建 xterm.js `hermes chat` REPL |
+| **Gateway API** | `http://<host>:18642` | 18642 → 8642 | OpenAI 相容 REST API |
+
+服務認證：
+- Dashboard：帳號 / 密碼（Basic auth，`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`）
+- Gateway：`API_SERVER_KEY` bearer token
 
 ---
 
@@ -398,7 +384,6 @@ URL:  https://<PREFIX>-hermes-terminal.woowtech.io
 | **儲存** | Longhorn PVC（5Gi） | 具名磁碟區 |
 | **網路** | Ingress + NetworkPolicy | 端口映射 |
 | **HTTPS** | Cloudflare Tunnel（Sidecar） | 手動 / 反向代理 |
-| **品牌** | 每命名空間獨立部署腳本 | `apply_branding.py` |
 | **資源需求** | 共享叢集節點 | 獨立主機（8GB+ RAM） |
 
 ### Podman 部署
@@ -417,12 +402,9 @@ vim .env  # 設定 API keys
 
 # 3. 部署
 podman-compose up -d
-
-# 4.（選用）套用品牌
-python3 apply_branding.py
 ```
 
-端口：WebUI `18787`、Dashboard `19119`、Gateway `18642`。
+端口：Dashboard `19119`、Gateway `18642`。
 
 ---
 
@@ -467,7 +449,7 @@ model_routes:
     model: openai/gpt-5.4-mini
     base_url: https://openrouter.ai/api/v1
     api_key: __OPENROUTER_API_KEY__
-  "@openai-api:gpt-5.4-mini":   # WebUI 選擇器格式
+  "@openai-api:gpt-5.4-mini":   # OpenAI 相容用戶端格式
     model: openai/gpt-5.4-mini
     base_url: https://openrouter.ai/api/v1
     api_key: __OPENROUTER_API_KEY__
@@ -483,7 +465,9 @@ gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5-mini, gpt-5.3-c
 | `MINIMAX_API_KEY` | 是 | MiniMax M2.7 API 金鑰 |
 | `OPENROUTER_API_KEY` | 是 | OpenRouter API 金鑰（用於 GPT/Claude） |
 | `API_SERVER_KEY` | 是 | Gateway API 認證金鑰 |
-| `WEBUI_PASSWORD` | 是 | WebUI 登入密碼 |
+| `DASHBOARD_USERNAME` | 是 | Dashboard Basic-auth 帳號（預設 `admin`） |
+| `DASHBOARD_PASSWORD` | 是 | Dashboard Basic-auth 密碼 |
+| `TTYD_PASSWORD` | 選填 | ttyd 瀏覽器終端密碼（K3s `11-terminal.yaml`，本 podman 分支不部署） |
 | `CLOUDFLARE_TUNNEL_TOKEN` | K3s 專用 | Cloudflare Tunnel Token |
 | `POSTGRES_PASSWORD` | 是 | PostgreSQL 密碼 |
 
@@ -519,73 +503,21 @@ docker push <registry>/hermes-agent-custom:latest
 
 ## 多實例部署
 
-每個實例運行在獨立的 Kubernetes 命名空間中，擁有：
-- 獨立持久化磁碟區（5Gi Longhorn PVC）
-- 獨立 PostgreSQL + Redis
-- 獨立 Cloudflare Tunnel
-- 獨立品牌配置
-
-### 實例登記表（`instances/instances.json`）
-
-```json
-{
-  "instances": {
-    "woowtech": {
-      "namespace": "hermes",
-      "domain": "woowtech-hermes.woowtech.io",
-      "purpose": "WoowTech Odoo 18 ERP 顧問"
-    },
-    "apporoalan": {
-      "namespace": "apporoalan-hermes",
-      "domain": "apporoalan-hermes.woowtech.io",
-      "purpose": "ESG/WELL/LEED 健康建築顧問"
-    }
-  }
-}
-```
+每個租戶實例運行在獨立的 Podman 主機上，擁有：
+- 具名磁碟區作為 agent 資料（`hermes-data`）
+- 同 pod 內共置的 PostgreSQL + Redis
+- Cloudflare Tunnel 路由指向 Dashboard（`:19119`）
 
 ### 部署新實例
 
 ```bash
-cd deploy/k3s
-bash deploy-instance.sh <instance-name>
+cd deploy/podman
+cp .env.example .env
+vim .env
+podman-compose up -d
 ```
 
-此命令會建立命名空間、套用所有 manifest（帶入替換值）、設定 Cloudflare Tunnel 並套用品牌。
-
----
-
-## 白標品牌
-
-每個實例可擁有自訂品牌（Logo、顏色、標題、Favicon）。品牌模板位於 `branding/`：
-
-```
-branding/
-  woowtech/          # WoowTech 品牌
-    apply_branding_woowtech.py
-    deploy-woowtech-hermes.sh
-    replace_icons.sh
-    icons/            # 自訂 Favicon 組
-    SKILL.md          # AI 人格提示詞
-  apporo/             # Apporo 品牌
-    apply_branding_apporo.py
-    deploy-apporo-hermes.sh
-    replace_icons.sh
-    icons/
-    SKILL.md
-  template-icons/     # SVG 原始圖標
-    favicon.svg
-    woowtech-logo-original.svg
-    apporo-logo.svg
-```
-
-### 建立新品牌
-
-1. 複製現有品牌目錄：`cp -r branding/woowtech branding/mybrand`
-2. 替換 `branding/mybrand/icons/` 中的圖標檔案
-3. 編輯 `apply_branding_mybrand.py` 設定新顏色和標題
-4. 編輯 `SKILL.md` 設定品牌的 AI 人格
-5. 執行：`bash branding/mybrand/deploy-mybrand-hermes.sh`
+每台主機是自包含堆疊，本分支未提供跨主機的實例登記表。
 
 ---
 
@@ -627,7 +559,7 @@ branding/
 
 ## API 參考
 
-Hermes 提供 **46 個已驗證 API 端點**，分佈於兩個服務：
+Hermes 於 Dashboard 服務提供 **28 個已驗證 API 端點**：
 
 ### Dashboard API（端口 9119）— 28 個端點
 
@@ -643,20 +575,6 @@ Hermes 提供 **46 個已驗證 API 端點**，分佈於兩個服務：
 | `/api/model/options` | GET | 可用模型列表 |
 | `/api/analytics/usage` | GET | Token 用量統計 |
 | `/api/logs` | GET | Agent 日誌 |
-
-### WebUI API（端口 8787）— 18 個端點
-
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/api/auth/login` | POST | 密碼登入 |
-| `/api/sessions` | GET | 對話列表 |
-| `/api/session/new` | POST | 建立新對話 |
-| `/api/chat/start` | POST | 發送訊息（串流） |
-| `/api/skills` | GET | 技能列表（104 個） |
-| `/api/models` | GET | 可用模型 |
-| `/api/memory` | GET | SOUL.md 內容 |
-| `/api/insights` | GET | 分析資料 |
-| `/api/kanban/boards` | GET | 看板列表 |
 
 完整 API 文件：[docs/api-contract.md](docs/api-contract.md)
 
@@ -674,12 +592,11 @@ bash run-all.sh
 | 輪次 | 焦點 | 測試內容 |
 |------|------|---------|
 | 第 1 輪 | 基礎設施 | Pod 健康、PVC、DNS、端口連通性 |
-| 第 2 輪 | API | 所有 46 個端點驗證 |
+| 第 2 輪 | API | 所有 28 個 Dashboard 端點驗證 |
 | 第 3 輪 | 安全性 | 認證、CORS、速率限制、密鑰遮蔽 |
 | 第 4 輪 | 韌性 | Pod 重啟、PVC 持久化、當機復原 |
-| 第 5 輪 | 整合 | WebUI ↔ Gateway ↔ LLM 端到端 |
+| 第 5 輪 | 整合 | Dashboard TUI ↔ Gateway ↔ LLM 端到端 |
 | 第 6 輪 | LLM 整合 | 模型路由、回應品質、串流 |
-| 第 7 輪 | WebUI 功能 | 對話、技能、記憶、看板、數據分析 |
 
 ### Playwright E2E 測試
 
@@ -715,11 +632,11 @@ npx playwright test
 
 | 問題 | 原因 | 解決方案 |
 |------|------|---------|
-| WebUI 顯示「Connecting...」 | Agent 尚未就緒 | 等待 60 秒讓 s6-overlay 啟動，檢查 `kubectl logs` |
 | Dashboard TUI 空白 | 權限不符 | Dockerfile 第 7 層已修復，重建自訂映像 |
+| Dashboard 登入被拒 | Basic auth 環境變數未設定 | 檢查 `.env` 中的 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 並重啟容器 |
 | 模型回傳 MiniMax 而非 GPT | 缺少 `@openai-api:` 路由 | 執行 `config/fix-model-routes.py` 新增路由 |
-| Cloudflare Tunnel 離線 | Token 過期或 Tunnel 被刪除 | 重新執行 `deploy/k3s/init-cloudflare-hermes.py` |
-| PVC 滿了（5Gi） | 舊對話累積 | 透過 WebUI Settings 封存/刪除舊 Session |
+| Cloudflare Tunnel 離線 | Token 過期或 Tunnel 被刪除 | 重新核發 tunnel token，路由更新為 `http://localhost:19119` |
+| 磁碟區滿了 | 舊對話累積 | 透過 Dashboard Settings 封存/刪除舊 Session |
 | Playwright 失敗 | Chromium 未安裝 | 確保使用自訂 Docker 映像（非基礎映像） |
 | `.env` 更新後未同步 | 指紋不符 | 執行 `config/apply-env-fingerprint-patch.py` |
 
@@ -727,8 +644,14 @@ npx playwright test
 
 ## 更新日誌
 
+### v0.17（2026-07-30）— BREAKING
+- 移除 `hermes-webui` sidecar；Dashboard TUI（`:19119`）為唯一 chat 介面
+- 端口對應改為 `19119`（Dashboard）+ `18642`（Gateway）；`18787` 不再開放
+- 移除 `apply_branding.py` + `branding/`（品牌腳本 patch WebUI 內部檔案，已失效）
+- 詳細 BREAKING 說明與遷移步驟請參閱 [CHANGELOG.md](CHANGELOG.md) `[0.17.0]`
+
 ### v0.15（2026-07）
-- 模型路由修復：新增 `@openai-api:*` 路由以相容 WebUI 選擇器
+- 模型路由修復：新增 `@openai-api:*` 路由以相容 OpenAI 相容用戶端
 - 同步模型列表（新增 gpt-5.5-pro、gpt-5.4-nano）
 - K3s/Podman `.env` 指紋同步修補
 - Playwright E2E 測試套件（10/10 通過）
@@ -752,7 +675,6 @@ npx playwright test
 
 - GitHub Issues：[WOOWTECH/Woow_hermes_agent_docker_compose_all/issues](https://github.com/WOOWTECH/Woow_hermes_agent_docker_compose_all/issues)
 - 上游專案：[Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent)
-- WebUI：[nesquena/hermes-webui](https://github.com/nesquena/hermes-webui)
 - 使用手冊：[docs/user-manual-zh-TW.md](docs/user-manual-zh-TW.md)（25 章完整中文手冊）
 
 **授權**：Proprietary — WOOW Tech 部署與客製化層。上游元件保留各自授權。

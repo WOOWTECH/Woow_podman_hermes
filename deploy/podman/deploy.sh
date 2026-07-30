@@ -1,12 +1,12 @@
 #!/bin/bash
-# Hermes Agent v0.17.0 — Podman 完整部署
-# 與 K3s 標準配置對齊：所有工具、技能、MCP、ddgs web search
+# Hermes Agent v0.17.0 — Podman 部署（單容器架構）
+# Dashboard TUI 為唯一 chat 介面；不再部署 hermes-webui
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
 echo "═══════════════════════════════════════"
-echo "  Hermes Agent — Podman Deploy (OfficeCLI+FFmpeg)"
+echo "  Hermes Agent — Podman Deploy (Dashboard-only)"
 echo "═══════════════════════════════════════"
 
 # Step 1: Generate .env if missing
@@ -55,38 +55,19 @@ podman exec hermes-agent sh -c '
   officecli --version 2>/dev/null && echo "  OfficeCLI OK" || echo "  OfficeCLI install failed"
 '
 
-# Step 5: Agent source copy (for WebUI gateway mode)
-echo "Step 5: Agent source copy..."
-podman exec hermes-agent sh -c 'test -d /opt/data/hermes-agent || (cp -a /opt/hermes /opt/data/hermes-agent && rm -rf /opt/data/hermes-agent/.git)'
-
-# Step 5b: Install agent into WebUI venv (required for WebUI local-agent chat)
-echo "Step 5b: Install agent into WebUI venv..."
-podman exec hermes-webui sh -c '
-  test -d /home/hermeswebui/.hermes/hermes-agent || exit 0
-  /app/venv/bin/python -c "import run_agent" 2>/dev/null && exit 0
-  cd /home/hermeswebui/.hermes/hermes-agent && /app/venv/bin/pip install -e . 2>&1 | tail -1
-'
-# Pre-provision browser (Node+Chrome) as the webui runtime user so first chat is fast
-podman exec -d --user hermeswebui hermes-webui sh -c '
-  export HOME=/home/hermeswebui PATH=/home/hermeswebui/.hermes/node/bin:$PATH
-  command -v agent-browser >/dev/null 2>&1 || exit 0
-  test -d /home/hermeswebui/.agent-browser/browsers && exit 0
-  agent-browser install > /home/hermeswebui/.hermes/browser_install.log 2>&1
-'
-
-# Step 6: TUI PVC fix
-echo "Step 6: TUI PVC setup..."
+# Step 5: TUI PVC fix
+echo "Step 5: TUI PVC setup..."
 podman exec hermes-agent sh -c '
   test -d /opt/data/ui-tui || cp -r /opt/hermes/ui-tui /opt/data/ui-tui 2>/dev/null
   chown -R hermes:hermes /opt/data/ui-tui/ 2>/dev/null || true
 '
 
-# Step 7: tmux
-echo "Step 7: tmux install..."
+# Step 6: tmux
+echo "Step 6: tmux install..."
 podman exec hermes-agent sh -c 'which tmux || (apt-get update -qq && apt-get install -y -qq tmux)' 2>/dev/null
 
-# Step 8: Superpowers skills
-echo "Step 8: Superpowers skills..."
+# Step 7: Superpowers skills
+echo "Step 7: Superpowers skills..."
 if ! podman exec hermes-agent test -f /opt/data/skills/brainstorming/SKILL.md 2>/dev/null; then
     T=$(mktemp -d)
     git clone --depth 1 https://github.com/obra/superpowers.git "$T/sp" 2>/dev/null
@@ -97,8 +78,8 @@ if ! podman exec hermes-agent test -f /opt/data/skills/brainstorming/SKILL.md 2>
     echo "  Superpowers installed"
 fi
 
-# Step 9: Config optimize
-echo "Step 9: Config optimize..."
+# Step 8: Config optimize
+echo "Step 8: Config optimize..."
 podman exec hermes-agent sh -c '
   # Fix approvals
   sed -i "s/mode: manual/mode: off/" /opt/data/config.yaml 2>/dev/null
@@ -128,61 +109,20 @@ podman exec hermes-agent sh -c '
   echo "  Config optimized"
 '
 
-# Step 10: Wait for WebUI healthy
-echo "Step 10: Waiting for WebUI..."
-for i in $(seq 1 60); do
-  S=$(podman inspect hermes-webui --format '{{.State.Health.Status}}' 2>/dev/null)
-  [ "$S" = "healthy" ] && break
-  sleep 10
-done
-
-# Step 11: Branding
-echo "Step 11: Branding..."
-if [ -d "${SCRIPT_DIR}/icons" ]; then
-    podman exec hermes-agent mkdir -p /opt/data/icons
-    for I in "${SCRIPT_DIR}"/icons/*; do [ -f "$I" ] && podman cp "$I" hermes-agent:/opt/data/icons/; done
-    [ -f "${SCRIPT_DIR}/apply_branding.py" ] && podman cp "${SCRIPT_DIR}/apply_branding.py" hermes-agent:/opt/data/apply_branding.py
-    podman exec hermes-agent sh -c 'printf "#!/bin/sh\ncp /home/hermeswebui/.hermes/icons/* /app/static/ 2>/dev/null\npython3 /home/hermeswebui/.hermes/apply_branding.py 2>/dev/null\n" > /opt/data/replace_icons.sh && chmod +x /opt/data/replace_icons.sh'
-    podman exec hermes-webui sh -c 'grep -q replace_icons /hermeswebui_init.bash || sed -i "/cd \/app; python server.py/i test -f /home/hermeswebui/.hermes/replace_icons.sh && sh /home/hermeswebui/.hermes/replace_icons.sh 2>/dev/null || true" /hermeswebui_init.bash'
-    podman restart hermes-webui
-    sleep 30
-fi
-
-# Step 11b: Model routing fix (@openai: prefix support)
-echo "Step 11b: Model routing fix..."
+# Step 9: Model routing fix (@openai: prefix support)
+echo "Step 9: Model routing fix..."
 podman cp "${SCRIPT_DIR}/../../config/fix-model-routes.py" hermes-agent:/tmp/fix-model-routes.py 2>/dev/null || true
 podman exec hermes-agent python3 /tmp/fix-model-routes.py 2>/dev/null || echo "  (model routes: no model_routes section yet)"
 
-# Step 11c: .env fingerprint patch (Dashboard→WebUI model sync)
-echo "Step 11c: .env fingerprint patch..."
-podman cp "${SCRIPT_DIR}/../../config/apply-env-fingerprint-patch.py" hermes-webui:/tmp/apply-env-patch.py 2>/dev/null || true
-# Apply to both possible code locations (/app and /apptoo)
-for CFG_DIR in /app /apptoo; do
-    podman exec hermes-webui sh -c "test -f ${CFG_DIR}/api/config.py && sed -i 's|CFG = .*|CFG = \"${CFG_DIR}/api/config.py\"|' /tmp/apply-env-patch.py && python3 /tmp/apply-env-patch.py" 2>/dev/null || true
-done
-
-# Step 12: Enable all skills
-echo "Step 12: Enable skills..."
-PW=$(grep WEBUI_PASSWORD .env 2>/dev/null | cut -d= -f2 || echo admin)
-podman exec hermes-webui python3 -c "
-import http.cookiejar,urllib.request,json;cj=http.cookiejar.CookieJar()
-o=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-o.open(urllib.request.Request('http://localhost:8787/api/auth/login',json.dumps({'password':'$PW'}).encode(),headers={'Content-Type':'application/json'}),timeout=10)
-sk=json.loads(o.open(urllib.request.Request('http://localhost:8787/api/skills'),timeout=10).read()).get('skills',[])
-c=sum(1 for s in sk if s.get('disabled',True) and not(o.open(urllib.request.Request('http://localhost:8787/api/skills/toggle',json.dumps({'name':s['name'],'enabled':True}).encode(),headers={'Content-Type':'application/json'},method='POST'),timeout=5) and False))
-print(f'Enabled {c}/{len(sk)} skills')
-" 2>/dev/null
-
-# Step 13: Clear caches
-echo "Step 13: Clear caches..."
+# Step 10: Clear caches
+echo "Step 10: Clear caches..."
 podman exec hermes-agent sh -c 'rm -f /opt/data/.skills_prompt_snapshot.json /opt/data/skills/.bundled_manifest /opt/data/provider_models_cache.json /opt/data/models_dev_cache.json'
 
 echo ""
 echo "═══════════════════════════════════════"
-echo "  部署完成！Hermes Agent (OfficeCLI + FFmpeg)"
+echo "  部署完成！Hermes Agent (Dashboard-only)"
 echo "═══════════════════════════════════════"
-echo "  WebUI:     http://localhost:18787"
-echo "  Dashboard: http://localhost:19119"
-echo "  API:       http://localhost:18642"
-echo "  密碼:      admin (WebUI + Dashboard)"
+echo "  Dashboard: http://localhost:19119   (Chat TUI + Config + MCP)"
+echo "  Gateway:   http://localhost:18642"
+echo "  密碼:      admin (Dashboard basic-auth)"
 echo "═══════════════════════════════════════"
