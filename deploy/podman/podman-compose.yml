@@ -26,6 +26,7 @@ services:
     ports:
       - "18642:8642"
       - "19119:9119"
+      - "18644:8644"
     restart: unless-stopped
     command: ["gateway", "run"]
     environment:
@@ -39,12 +40,16 @@ services:
       - API_SERVER_ENABLED=true
       - API_SERVER_HOST=0.0.0.0
       - API_SERVER_KEY=${API_SERVER_KEY}
+      - WEBHOOK_ENABLED=true
+      - WEBHOOK_PORT=8644
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - API_SERVER_CORS_ORIGINS=*
       - GATEWAY_ALLOW_ALL_USERS=true
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
       - PLAYWRIGHT_BROWSERS_PATH=/opt/data/playwright-browsers
       - HERMES_DASHBOARD_PUBLIC_URL=${HERMES_DASHBOARD_PUBLIC_URL:-http://localhost:19119}
       - HERMES_BASE_URL=${HERMES_DASHBOARD_PUBLIC_URL:-http://localhost:19119}
@@ -54,6 +59,9 @@ services:
     volumes:
       - hermes-data:/opt/data
     shm_size: "1g"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8642/health || exit 1"]
       interval: 15s

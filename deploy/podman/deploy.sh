@@ -14,10 +14,19 @@ if [ ! -f "$ENV_FILE" ]; then
     cp "${SCRIPT_DIR}/.env.example" "$ENV_FILE"
     sed -i "s/^API_SERVER_KEY=.*/API_SERVER_KEY=$(openssl rand -hex 32)/" "$ENV_FILE"
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)/" "$ENV_FILE"
+    sed -i "s/^WEBHOOK_SECRET=.*/WEBHOOK_SECRET=$(openssl rand -hex 32)/" "$ENV_FILE"
     sed -i "s/^HERMES_UID=.*/HERMES_UID=$(id -u)/" "$ENV_FILE"
     sed -i "s/^HERMES_GID=.*/HERMES_GID=$(id -g)/" "$ENV_FILE"
     echo "已生成 .env — 編輯 MINIMAX_API_KEY 後重新執行"
     exit 0
+fi
+
+# Backfill WEBHOOK_SECRET for pre-existing .env files
+if ! grep -q '^WEBHOOK_SECRET=' "$ENV_FILE"; then
+    echo "WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$ENV_FILE"
+    echo "  (added WEBHOOK_SECRET to existing .env)"
+elif grep -q '^WEBHOOK_SECRET=$' "$ENV_FILE"; then
+    sed -i "s/^WEBHOOK_SECRET=.*/WEBHOOK_SECRET=$(openssl rand -hex 32)/" "$ENV_FILE"
 fi
 
 # Step 2: Start containers
@@ -118,11 +127,58 @@ podman exec hermes-agent python3 /tmp/fix-model-routes.py 2>/dev/null || echo " 
 echo "Step 10: Clear caches..."
 podman exec hermes-agent sh -c 'rm -f /opt/data/.skills_prompt_snapshot.json /opt/data/skills/.bundled_manifest /opt/data/provider_models_cache.json /opt/data/models_dev_cache.json'
 
+# Step 11: Apply MCP OAuth iss patches (lost on container recreate)
+#   - iss-callback.py:   forward RFC 9207 `iss` through Dashboard OAuth flow
+#                        so the SDK can validate it
+#   - iss-permissive.py: tolerate iss mismatch when AS did not advertise
+#                        `authorization_response_iss_parameter_supported`
+#                        (works around Higgs's broken proxy)
+echo "Step 11: Apply MCP OAuth iss patches..."
+if [ -d "${SCRIPT_DIR}/patches" ]; then
+    podman exec hermes-agent mkdir -p /tmp/patches
+    podman cp "${SCRIPT_DIR}/patches/iss-callback.py" hermes-agent:/tmp/patches/iss-callback.py
+    podman cp "${SCRIPT_DIR}/patches/iss-permissive.py" hermes-agent:/tmp/patches/iss-permissive.py
+    podman exec hermes-agent python3 /tmp/patches/iss-callback.py
+    podman exec hermes-agent python3 /tmp/patches/iss-permissive.py
+    podman exec hermes-agent sh -c 'find /opt/hermes/hermes_cli /opt/hermes/tools -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true'
+    # Reload dashboard + gateway s6 services so patched code is loaded
+    podman exec hermes-agent sh -c '/command/s6-svc -r /run/service/dashboard 2>/dev/null || true'
+    podman exec hermes-agent sh -c '/command/s6-svc -r /run/service/gateway-default 2>/dev/null || true'
+    echo "  Patches applied + services reloaded"
+else
+    echo "  (patches/ dir missing — skipping)"
+fi
+
+# Step 12: Tailscale serve (Dashboard :443 + Webhook :8443)
+#   Runs on the woow-tailscale-gateway container so external OAuth redirects
+#   and webhook callers can reach us over HTTPS via the tailnet node.
+echo "Step 12: Tailscale serve setup..."
+TS_CONTAINER="${TS_CONTAINER:-woow-tailscale-gateway}"
+if podman ps --format '{{.Names}}' | grep -qx "$TS_CONTAINER"; then
+    # Dashboard on 443 (root path) → hermes-agent :19119
+    if ! podman exec "$TS_CONTAINER" tailscale serve status 2>/dev/null | grep -q "http://127.0.0.1:19119"; then
+        podman exec "$TS_CONTAINER" tailscale serve --bg --https=443 http://127.0.0.1:19119 || true
+        echo "  serve: 443 → 19119 (Dashboard)"
+    else
+        echo "  serve: 443 → 19119 already configured"
+    fi
+    # Webhook receiver on 8443 (root path) → hermes-agent :18644
+    if ! podman exec "$TS_CONTAINER" tailscale serve status 2>/dev/null | grep -q "http://127.0.0.1:18644"; then
+        podman exec "$TS_CONTAINER" tailscale serve --bg --https=8443 http://127.0.0.1:18644 || true
+        echo "  serve: 8443 → 18644 (Webhook)"
+    else
+        echo "  serve: 8443 → 18644 already configured"
+    fi
+else
+    echo "  ($TS_CONTAINER not running — skipping; set TS_CONTAINER=... to override)"
+fi
+
 echo ""
 echo "═══════════════════════════════════════"
 echo "  部署完成！Hermes Agent (Dashboard-only)"
 echo "═══════════════════════════════════════"
 echo "  Dashboard: http://localhost:19119   (Chat TUI + Config + MCP)"
 echo "  Gateway:   http://localhost:18642"
+echo "  Webhook:   http://localhost:18644/webhooks"
 echo "  密碼:      admin (Dashboard basic-auth)"
 echo "═══════════════════════════════════════"
