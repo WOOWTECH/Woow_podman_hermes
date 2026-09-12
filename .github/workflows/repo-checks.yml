@@ -1,0 +1,38 @@
+# .github/workflows/repo-checks.yml: repo-specific static checks. quadlet-ci.yml is vendored from
+# Woow_quadlet_migration_plan/lib and must not be edited; checks that belong to this repo live here.
+name: repo-checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Credentials, compose removal (D1), READMEs, image pins
+        run: tests/lint-repo.sh
+
+      - name: MCP OAuth patch anchors against the pinned upstream tag
+        run: tests/patch-anchors.sh
+
+      - name: shellcheck the in-image provisioning scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -s bash container/rootfs/usr/local/bin/woow-provision container/rootfs/etc/cont-init.d/020-woow-provision
+          shellcheck -s sh container/rootfs/etc/cont-init.d/016-fix-tui-perms
+
+      - name: python syntax of the image patches
+        run: python3 -m py_compile container/patches/*.py container/fix-model-routes.py
+
+      - name: hadolint on the Containerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: container/Containerfile
+          failure-threshold: error
