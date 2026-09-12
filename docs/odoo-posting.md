@@ -1,37 +1,11 @@
-# Hermes Agent Podman 部署 Skill
+# Odoo 自動貼文排程 / Odoo posting automation
 
-## 快速部署
-```bash
-bash deploy.sh    # 首次生成 .env，編輯 MINIMAX_API_KEY 後再執行
-```
+Notes for the WOOWTECH deployment that drives Odoo posts from Hermes cron jobs. They are operational
+notes, not part of the install: the scripts live in the agent's data volume under
+`/opt/data/scripts/`, which survives restarts and upgrades.
 
-## 10 步自動化（v0.17.0，單容器）
-1. 生成 .env | 2. 啟動容器 | 3. Hermes CLI + 清理 | 4. ddgs 網搜
-5. OfficeCLI | 6. TUI PVC 權限（`HERMES_TUI_DIR`） | 7. tmux
-8. Superpowers | 9. Config 優化 | 10. 清 cache
-
-## 唯一 GUI — Dashboard
-- Dashboard http://localhost:19119 (Chat TUI + 設定 + API Keys + MCP + Terminal)
-
-Chat TUI 為唯一 chat 介面；跑在 hermes-agent 容器中，具備完整 ffmpeg / edge-tts / rclone / playwright / node / hermes CLI。
-
-## 注意
-- Image 需全名: `docker.io/library/postgres:15`
-- 首次 config 可能是 anthropic，deploy.sh Step 8 自動修正為 MiniMax
-- Token Plan key 使用 `sk-cp-` prefix
-
-## Known Issues & Fixes
-
-| 問題 | 原因 | 修復方式 |
-|------|------|----------|
-| Dashboard TUI "No API key configured" | TUI 讀取 `.env` 檔案，非容器環境變數 | 部署腳本寫入 `MINIMAX_API_KEY` 到 `.env` |
-| Dashboard TUI 重啟後壞掉 | image layer `ui-tui/` 權限被重設 | `HERMES_TUI_DIR=/opt/data/ui-tui` 從 PVC 讀取 |
-
-## 已驗證 K3s 對照 100/100 一致
-
----
-
-## Odoo 自動貼文排程系統配置
+本頁為以 Hermes cron 驅動 Odoo 自動貼文的維運筆記，非安裝流程的一部分；腳本放在 agent 資料卷的
+`/opt/data/scripts/`，重啟與升級都會保留。
 
 部署 Hermes 後如需連接 Odoo 執行自動貼文生成，按以下步驟設定。
 
@@ -77,7 +51,7 @@ scripts/
 ### 環境變數
 
 ```bash
-MINIMAX_API_KEY=sk-cp-...   # MiniMax API（Token Plan）
+MINIMAX_API_KEY=<your MiniMax token-plan key>   # 放在 ~/.config/hermes/hermes.env，不要放在這裡
 ```
 
 ### 品質門檻
