@@ -1,0 +1,3 @@
+#!/command/with-contenv sh
+# old Dockerfile.hermes-agent fix B: re-assert TUI ownership on every boot
+chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules 2>/dev/null || true

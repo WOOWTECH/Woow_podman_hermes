@@ -1,0 +1,118 @@
+# Woow Hermes Agent image - replaces deploy.sh's in-container mutations with build steps.
+#
+#   podman build --format=docker --target slim \
+#     --build-arg WOOW_IMAGE_VERSION=v2026.8.31-woow1 \
+#     -t localhost/woow-hermes-agent:v2026.8.31-woow1 -f container/Containerfile container/
+#
+# Targets
+#   slim (default)  upstream image + exactly what deploy.sh did to the running container. Parity with
+#                   the compose deployment.
+#   full            slim + the 7-layer toolchain from the old docker/Dockerfile.hermes-agent (gcloud,
+#                   texlive, Playwright+Chromium, gh, yq, cloudflared). That toolchain was never used by
+#                   the podman deployment, which ran the plain upstream image.
+#
+# Every step that deploy.sh ran with 2>/dev/null now fails the build. A moved patch anchor, a changed
+# download or a missing tool is caught here, not at 03:00 in production.
+ARG HERMES_BASE=docker.io/nousresearch/hermes-agent:v2026.8.31@sha256:64923faeae267792bf9bf87fe3b4c4869e35004e360c7df01730ad801b74d524
+
+FROM ${HERMES_BASE} AS slim
+USER root
+ARG DDGS_VERSION=9.16.0
+ARG OFFICECLI_VERSION=v1.0.135
+ARG OFFICECLI_SHA256=00028af3db48678fc9ff6c8f9e70fa4c150dcee2b43ed85254afc8f4a48e13eb
+ARG SUPERPOWERS_REF=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
+
+# deploy.sh step 6 (tmux) and step 3 (CLI on PATH, remove unused binaries and skill packs)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tmux \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
+ && rm -f /usr/local/bin/argocd /usr/local/bin/helm /usr/bin/docker \
+ && rm -rf /opt/hermes/skills/apple /opt/hermes/skills/gaming /opt/hermes/skills/email \
+           /opt/hermes/skills/social-media /opt/hermes/skills/yuanbao /opt/hermes/skills/media/heartmula \
+           /opt/hermes/skills/media/songsee /opt/hermes/skills/media/spotify \
+           /opt/hermes/skills/media/youtube-content /opt/hermes/skills/smart-home/openhue
+
+# deploy.sh step 4: ddgs web search inside the agent venv (pinned)
+RUN SITE="$(/opt/hermes/.venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')" \
+ && uv pip install --python /opt/hermes/.venv/bin/python3 --target="$SITE" "ddgs==${DDGS_VERSION}" \
+ && /opt/hermes/.venv/bin/python3 -c 'from ddgs import DDGS'
+
+# deploy.sh step 4b: OfficeCLI. It used to be downloaded into the data volume; now it is a pinned,
+# checksummed image binary.
+RUN curl -fsSL -o /usr/local/bin/officecli \
+      "https://github.com/iOfficeAI/OfficeCLI/releases/download/${OFFICECLI_VERSION}/officecli-linux-x64" \
+ && echo "${OFFICECLI_SHA256}  /usr/local/bin/officecli" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/officecli \
+ && DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true officecli --version
+
+# deploy.sh step 11: MCP OAuth RFC 9207 `iss` patches. The scripts exit 1 when an anchor is missing,
+# so an upstream change that moves the code breaks the build instead of silently shipping unpatched.
+COPY patches/ /tmp/woow-patches/
+RUN python3 /tmp/woow-patches/iss-callback.py \
+ && python3 /tmp/woow-patches/iss-permissive.py \
+ && find /opt/hermes/hermes_cli /opt/hermes/tools -type d -name __pycache__ -prune -exec rm -rf {} + \
+ && rm -rf /tmp/woow-patches
+
+# deploy.sh step 7: superpowers skills, pinned. Seeded into /opt/data/skills on first boot by cont-init.
+RUN git clone --filter=blob:none https://github.com/obra/superpowers.git /tmp/sp \
+ && git -C /tmp/sp checkout --quiet "${SUPERPOWERS_REF}" \
+ && mkdir -p /opt/woow/seed \
+ && cp -a /tmp/sp/skills /opt/woow/seed/skills \
+ && rm -rf /tmp/sp
+
+# Old Dockerfile layer 7: the base builds ui-tui as uid 10000 but runs hermes as HERMES_UID.
+RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules
+
+# Provisioning that must touch the data volume, shipped as image files:
+#   /etc/cont-init.d/016-fix-tui-perms   (old Dockerfile fix B)
+#   /etc/cont-init.d/020-woow-provision  boot: ui-tui sync on image change, skills seed, /opt/data/.env keys, cache reset
+#   /usr/local/bin/woow-provision        post-start (hermes-provision.service): config policy once, tools/plugins, model routes
+#   /opt/woow/fix-model-routes.py        (was config/fix-model-routes.py, podman cp'd by step 9)
+COPY rootfs/ /
+COPY fix-model-routes.py /opt/woow/fix-model-routes.py
+RUN chmod 0755 /etc/cont-init.d/016-fix-tui-perms /etc/cont-init.d/020-woow-provision /usr/local/bin/woow-provision
+
+ARG WOOW_IMAGE_VERSION=dev
+ENV WOOW_IMAGE_VERSION=${WOOW_IMAGE_VERSION}
+LABEL org.opencontainers.image.title="Woow Hermes Agent" \
+      org.opencontainers.image.source="https://github.com/WOOWTECH/Woow_podman_hermes" \
+      org.opencontainers.image.version="${WOOW_IMAGE_VERSION}" \
+      io.woowtech.hermes.base="${HERMES_BASE}"
+
+# Build-time proof of every deploy.sh step that moved into the image.
+RUN command -v tmux \
+ && test -x /usr/local/bin/hermes \
+ && /opt/hermes/.venv/bin/python3 -c 'from ddgs import DDGS' \
+ && test ! -e /usr/local/bin/helm && test ! -e /usr/local/bin/argocd \
+ && grep -q 'iss: Optional\[str\] = None' /opt/hermes/hermes_cli/web_routers/mcp.py \
+ && grep -q 'iss mismatch tolerated' /opt/hermes/.venv/lib/python*/site-packages/mcp/client/auth/utils.py \
+ && test -f /opt/woow/seed/skills/brainstorming/SKILL.md
+
+# The base image's s6-overlay entrypoint switches to HERMES_UID itself: do not set USER.
+
+
+FROM slim AS full
+ARG YQ_VERSION=v4.53.6
+ARG GH_VERSION=2.100.0
+ARG CLOUDFLARED_VERSION=2026.9.1
+# The old Dockerfile.hermes-agent layers 1-6, with every download pinned (it used cloudflared
+# "latest", an unpinned gcloud tarball and @playwright/cli@latest). Content unchanged otherwise;
+# see docker/Dockerfile.hermes-agent in git history for the package list.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      jq fd-find rsync mosh git-lfs redis-tools imagemagick lynx dnsutils iputils-ping nmap \
+      netcat-openbsd traceroute apt-transport-https gnupg ca-certificates python3-pip locales \
+      pandoc texlive-xetex texlive-fonts-recommended fonts-noto-cjk fonts-noto-color-emoji \
+ && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+ && sed -i '/en_US.UTF-8/s/^# //g; /zh_TW.UTF-8/s/^# //g' /etc/locale.gen && locale-gen \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+ && curl -fsSL -o /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+ && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" | tar xz -C /tmp \
+ && cp /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh && rm -rf /tmp/gh_* \
+ && chmod 0755 /usr/local/bin/yq /usr/local/bin/cloudflared
+# TODO(impl): gcloud SDK pinned tarball + sha256, playwright/chromium pinned, httpie/yt-dlp pinned.
+
+
+# Default target when --target is omitted: the parity image.
+FROM slim AS default
