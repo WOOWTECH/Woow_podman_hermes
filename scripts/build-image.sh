@@ -24,7 +24,7 @@ while (($#)); do
   case $1 in
     --target) (($# >= 2)) || ql_die "--target needs slim or full"; target=$2; shift ;;
     --force) force=1 ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift
