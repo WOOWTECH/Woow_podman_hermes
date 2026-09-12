@@ -87,14 +87,14 @@ jobs:
           echo "🔍 Validating expected Hermes repo structure..."
           MISSING=0
 
-          for dir in deploy config docker docs; do
+          for dir in quadlet container config scripts tests docs; do
             if [ ! -d "$dir" ]; then
               echo "⚠️  WARNING: expected directory '$dir/' is missing"
               MISSING=1
             fi
           done
 
-          for file in README.md README_zh-TW.md .env.example; do
+          for file in README.md README_zh-TW.md config/hermes.env.example container/Containerfile; do
             if [ ! -f "$file" ]; then
               echo "⚠️  WARNING: expected file '$file' is missing"
               MISSING=1

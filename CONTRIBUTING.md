@@ -17,12 +17,12 @@ the entire OpenClaw branch (including `openclaw-k3s-paas/`, `setup-wizard/`,
 1. **One repo = one local clone**
    ```bash
    # CORRECT — dedicated clone
-   git clone https://github.com/WOOWTECH/Woow_hermes_agent_docker_compose_all.git ~/repos/hermes
+   git clone https://github.com/WOOWTECH/Woow_podman_hermes.git ~/repos/hermes
    cd ~/repos/hermes
 
    # WRONG — adding as remote to OpenClaw
    cd ~/repos/openclaw
-   git remote add hermes https://github.com/WOOWTECH/Woow_hermes_agent_docker_compose_all.git
+   git remote add hermes https://github.com/WOOWTECH/Woow_podman_hermes.git
    git push hermes k3s  # ← THIS WILL POLLUTE HERMES WITH OPENCLAW FILES
    ```
 
@@ -40,15 +40,28 @@ the entire OpenClaw branch (including `openclaw-k3s-paas/`, `setup-wizard/`,
 
 | Directory | Content |
 |-----------|---------|
-| `deploy/k3s/` | K3s deployment scripts and manifests |
-| `deploy/podman/` | Podman deployment scripts and compose |
-| `config/` | Golden configs, model routes, env patches |
-| `docker/` | Custom Hermes Agent Dockerfile |
-| `branding/` | Per-instance branding assets |
-| `instances/` | Multi-instance registry and configs |
-| `tests/` | Test suites and reports |
-| `docs/` | Screenshots, user manual, API docs |
+| `quadlet/` | The Quadlet units (`.container`, `.volume`, `.network`) and `render-vars` |
+| `systemd/` | Plain user units, currently `hermes-provision.service` |
+| `container/` | The image build context: `Containerfile`, patches, `rootfs/` |
+| `config/` | `hermes.env.example` and the golden reference configs |
+| `scripts/` | `install.sh`, `upgrade.sh`, `uninstall.sh`, `backup.sh`, `restore.sh`, `build-image.sh` |
+| `scripts/lib/` | The vendored `quadlet-lib.sh`. **Do not edit it here** — it is synced from the shared library and CI checks its hash against `quadlet-lib.manifest`. |
+| `tests/` | `dryrun.sh`, `smoke.sh`, `lint-repo.sh`, `patch-anchors.sh` |
+| `docs/` | Screenshots, user manual, API contract, Odoo posting notes |
 | `skills/` | Hermes skill definitions |
+
+Kubernetes manifests live in `Woow_k3s_hermes`, not here. The compose deployment was removed in
+`0.20.0-quadlet`; its last version is on the `compose-final` tag.
+
+### Before you open a PR
+
+```bash
+tests/dryrun.sh                                          # render + Quadlet dry-run + systemd-analyze
+tests/lint-repo.sh                                       # credentials, image pins, no live mutation
+shellcheck -x scripts/*.sh scripts/lib/*.sh tests/*.sh
+```
+
+`.github/workflows/quadlet-ci.yml` runs the same three on `ubuntu-24.04`.
 
 ### What does NOT belong
 
@@ -57,7 +70,7 @@ the entire OpenClaw branch (including `openclaw-k3s-paas/`, `setup-wizard/`,
 - `Dockerfile.nerve`, `Dockerfile.custom` — OpenClaw images
 - `openclaw-console/` — OpenClaw console
 - `.claude/epics/` — OpenClaw CI planning artifacts
-- `k8s-manifests/` at root level — OpenClaw manifests (Hermes uses `deploy/k3s/manifests/`)
+- `k8s-manifests/` at root level — OpenClaw manifests (Hermes k3s manifests live in `Woow_k3s_hermes`)
 
 ---
 
