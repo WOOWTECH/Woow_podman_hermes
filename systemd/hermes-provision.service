@@ -1,0 +1,23 @@
+# Post-start provisioning for hermes-agent: a plain user unit installed to ~/.config/systemd/user/
+# and enabled with `systemctl --user enable hermes-provision.service` (WantedBy= a generated unit
+# works: systemd resolves hermes-agent.service.wants/ by name across the unit search path).
+#
+# It runs /usr/local/bin/woow-provision, which is baked into the image, so no code is copied into
+# the container at runtime. The script waits for /health, then (once, guarded by a stamp in
+# /opt/data) applies the WOOWTECH config policy and enables tools/plugins, and on every run
+# re-applies the idempotent model-route fix. It only touches the data volume, never image files.
+[Unit]
+Description=Woow Hermes post-start provisioning
+Documentation=https://github.com/WOOWTECH/Woow_podman_hermes
+After=hermes-agent.service
+BindsTo=hermes-agent.service
+PartOf=hermes-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/podman exec hermes-agent /usr/local/bin/woow-provision --wait 300
+TimeoutStartSec=420
+
+[Install]
+WantedBy=hermes-agent.service

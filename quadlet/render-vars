@@ -1,0 +1,8 @@
+# Variables scripts/install.sh may substitute into the units (@@NAME@@).
+# Computed by scripts/render-args.sh from WOOW_HERMES_BIND and WOOW_HERMES_PORT_*:
+HERMES_PUBLISH_GATEWAY
+HERMES_PUBLISH_DASHBOARD
+HERMES_PUBLISH_WEBHOOK
+# Taken from ~/.config/hermes/hermes.env (validated by scripts/render-args.sh):
+WOOW_HERMES_MEMORY
+WOOW_HERMES_CPUS

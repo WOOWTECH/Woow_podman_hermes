@@ -1,0 +1,8 @@
+# A dedicated name. The compose stack ran from deploy/podman/, so podman-compose named its network
+# "podman_default" and its volumes "podman_*"; those generic names are not carried forward.
+[Unit]
+Description=Woow Hermes network
+
+[Network]
+NetworkName=hermes
+Label=io.woowtech.stack=hermes
