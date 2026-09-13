@@ -1,0 +1,150 @@
+# =============================================================
+# Hermes Agent Custom Image
+# Base: nousresearch/hermes-agent:latest (v0.15+ with s6-overlay)
+# Adds: CLI tools + Chromium/Playwright (no kubectl/psql)
+# User: managed by s6-overlay (HERMES_UID env)
+#
+# Build:
+#   docker build -t hermes-agent-custom:latest \
+#     -f Dockerfile.hermes-agent .
+# =============================================================
+FROM docker.io/nousresearch/hermes-agent:latest
+
+USER root
+
+# ── Layer 1: Core apt packages ─────────────────────────────────
+# Wave 1: jq, fd-find, rsync, httpie deps
+# Wave 2: redis-tools
+# Wave 4: lynx, network diag, chromium deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # Wave 1 — core productivity
+        jq \
+        fd-find \
+        rsync \
+        mosh \
+        git-lfs \
+        # Wave 2 — business
+        redis-tools \
+        # Wave 3 — content
+        imagemagick \
+        # Wave 4 — exploration & network
+        lynx \
+        dnsutils \
+        iputils-ping \
+        nmap \
+        netcat-openbsd \
+        traceroute \
+        # System deps for gcloud/gh
+        apt-transport-https \
+        gnupg \
+        ca-certificates \
+        python3-pip \
+        # Locale support
+        locales \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && sed -i '/zh_TW.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TZ=Asia/Taipei
+
+# ── Layer 2: Binary downloads ──────────────────────────────────
+# yq, cloudflared, gh (removed: helm, argocd, docker — no targets in container)
+ARG YQ_VERSION=v4.44.6
+ARG GH_VERSION=2.73.0
+
+# yq (mikefarah)
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+        -o /usr/local/bin/yq \
+    && chmod +x /usr/local/bin/yq
+
+# cloudflared
+RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
+        -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared
+
+# GitHub CLI
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+        | tar xz -C /tmp \
+    && cp /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh \
+    && rm -rf /tmp/gh_*
+
+# Removed: helm (56MB, no kubeconfig), argocd (179MB, no server), docker (30MB, no socket)
+
+# ── Layer 3: Google Cloud SDK ────────────────────────────────
+
+# Remove unused tools from base image (saves ~265MB)
+# - google-chrome-stable: replaced by Chromium via Playwright
+# - docker.io: no Docker socket in container (30MB)
+RUN apt-get update \
+    && apt-get remove -y google-chrome-stable docker.io 2>/dev/null || true \
+    && rm -f /usr/local/bin/helm /usr/local/bin/argocd 2>/dev/null \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Google Cloud SDK (standalone tarball — avoids trixie apt issues)
+RUN curl -fsSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz \
+        | tar xz -C /opt \
+    && /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false \
+    && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
+    && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil \
+    && ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq
+
+# ── Layer 4: Content generation tools ──────────────────────────
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pandoc \
+        texlive-xetex \
+        texlive-fonts-recommended \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Layer 5: Python & Node tools ───────────────────────────────
+
+# Shared browser path accessible by both root (build) and hermes user (runtime)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+
+# httpie + yt-dlp (system Python)
+RUN pip install --break-system-packages --no-cache-dir httpie yt-dlp
+
+# playwright (system Python + venv)
+RUN /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir playwright \
+    && /opt/hermes/.venv/bin/uv pip install playwright 2>/dev/null || true
+
+# Install Chromium via system python's playwright
+RUN /usr/bin/python3 -m playwright install --with-deps chromium \
+    && chmod -R o+rx /opt/playwright-browsers
+
+# Playwright CLI (npm)
+RUN npm install -g @playwright/cli@latest
+
+# ── Layer 6: Cleanup & permissions ─────────────────────────────
+
+RUN rm -rf /tmp/* /var/lib/apt/lists/* 2>/dev/null; \
+    mkdir -p /home/hermes/.cache /home/hermes/.local/share \
+             /home/hermes/.ssh /home/hermes/.config \
+    && chown -R hermes:hermes /home/hermes
+
+# ── Layer 7: Fix Dashboard TUI permissions ────────────────────
+# The base image builds ui-tui as UID 10000 but runtime hermes user
+# is remapped to UID 1000 via HERMES_UID. The upstream stage2-hook
+# skips chown when HERMES_HOME (PVC) is already owned correctly,
+# leaving ui-tui owned by 10000. This breaks the TUI build/PTY.
+# See: https://github.com/NousResearch/hermes-agent/issues/23402
+
+# Fix A: chown at build time (zero runtime cost)
+RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules 2>/dev/null || true
+
+# Fix B: s6 cont-init.d hook to re-assert on every boot (defense in depth)
+RUN printf '#!/command/with-contenv sh\nchown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules 2>/dev/null || true\n' \
+      > /etc/cont-init.d/016-fix-tui-perms \
+    && chmod +x /etc/cont-init.d/016-fix-tui-perms
+
+# ── Git config for Hermes bot identity ─────────────────────────
+RUN git config --system user.name "Hermes Bot" \
+    && git config --system user.email "hermes@woowtech.io" \
+    && git config --system init.defaultBranch main
+
+# v0.15: s6-overlay manages user switching, do NOT set USER here

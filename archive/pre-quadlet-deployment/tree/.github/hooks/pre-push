@@ -1,0 +1,45 @@
+#!/bin/bash
+# =============================================================================
+# pre-push hook for Hermes repo — 防止被其他套件的本地 repo 誤推
+# =============================================================================
+# 安裝方式：cp .github/hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#
+# 此 hook 會檢查即將推送的內容是否包含不屬於 Hermes 的檔案。
+# =============================================================================
+
+remote="$1"
+url="$2"
+
+# Verify we're pushing to the correct Hermes repo
+EXPECTED_REPO="Woow_hermes_agent_docker_compose_all"
+if [[ "$url" != *"$EXPECTED_REPO"* ]]; then
+    echo ""
+    echo "⛔ 此本地倉庫是 Hermes Agent，但你正在推送到不匹配的 remote："
+    echo "   Remote: $remote"
+    echo "   URL:    $url"
+    echo ""
+    exit 1
+fi
+
+# Check for pollution markers in staged files
+while read local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        files=$(git ls-tree -r --name-only "$local_sha" 2>/dev/null)
+    else
+        files=$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)
+    fi
+
+    pollution=$(echo "$files" | grep -E "^(openclaw|setup-wizard/|Dockerfile\.nerve|Dockerfile\.custom|openclaw-console/)" | head -5)
+    if [ -n "$pollution" ]; then
+        echo ""
+        echo "⛔ 偵測到 OpenClaw 污染檔案，push 已阻擋："
+        echo "$pollution" | sed 's/^/    /'
+        echo ""
+        echo "此倉庫只應包含 Hermes Agent 相關檔案。"
+        exit 1
+    fi
+done
+
+exit 0

@@ -1,0 +1,108 @@
+# =============================================================================
+# repo-guard.yml — 倉庫污染防護 CI
+# =============================================================================
+# 檢查每次 push/PR 是否包含不屬於 Hermes 的檔案，
+# 如果偵測到 OpenClaw、OpenDesign 或其他套件的檔案，CI 會失敗。
+#
+# 背景：2026-03-22 曾因多 remote 共用同一本地 repo，
+#       導致 OpenClaw 整個 monorepo 被誤推到此倉庫。
+# =============================================================================
+
+name: Repo Guard — Anti-Pollution Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-pollution:
+    name: Check for cross-repo pollution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for OpenClaw pollution markers
+        run: |
+          echo "🔍 Scanning for cross-repo pollution markers..."
+          FOUND=0
+
+          # ── Pattern 1: OpenClaw-specific directories ──
+          for dir in openclaw-k3s-paas openclaw-console setup-wizard nerve; do
+            if [ -d "$dir" ]; then
+              echo "❌ POLLUTION DETECTED: directory '$dir/' belongs to OpenClaw, not Hermes"
+              FOUND=1
+            fi
+          done
+
+          # ── Pattern 2: OpenClaw-specific files ──
+          for file in Dockerfile.nerve Dockerfile.custom package.json playwright.config.mjs reset.sh; do
+            if [ -f "$file" ]; then
+              echo "❌ POLLUTION DETECTED: file '$file' belongs to OpenClaw, not Hermes"
+              FOUND=1
+            fi
+          done
+
+          # ── Pattern 3: OpenDesign-specific directories ──
+          for dir in opendesign open-design; do
+            if [ -d "$dir" ]; then
+              echo "❌ POLLUTION DETECTED: directory '$dir/' belongs to OpenDesign, not Hermes"
+              FOUND=1
+            fi
+          done
+
+          # ── Pattern 4: .claude/epics (OpenClaw CI artifacts) ──
+          if [ -d ".claude/epics" ]; then
+            echo "❌ POLLUTION DETECTED: '.claude/epics/' is an OpenClaw CI artifact"
+            FOUND=1
+          fi
+
+          # ── Pattern 5: Files referencing openclaw in name ──
+          OPENCLAW_FILES=$(find . -maxdepth 3 -name "*openclaw*" -not -path "./.git/*" 2>/dev/null)
+          if [ -n "$OPENCLAW_FILES" ]; then
+            echo "❌ POLLUTION DETECTED: files with 'openclaw' in name:"
+            echo "$OPENCLAW_FILES" | sed 's/^/    /'
+            FOUND=1
+          fi
+
+          # ── Result ──
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  ⛔  跨倉庫污染偵測到！此 push/PR 被阻擋。                  ║"
+            echo "║                                                            ║"
+            echo "║  此倉庫只應包含 Hermes Agent 相關檔案。                      ║"
+            echo "║  請確認你沒有從 OpenClaw 本地倉庫推送到此 remote。           ║"
+            echo "║                                                            ║"
+            echo "║  正確做法：使用獨立的本地 clone 來管理此倉庫。               ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+            exit 1
+          fi
+
+          echo "✅ No cross-repo pollution detected. Repository is clean."
+
+      - name: Validate expected structure
+        run: |
+          echo "🔍 Validating expected Hermes repo structure..."
+          MISSING=0
+
+          for dir in deploy config docker docs; do
+            if [ ! -d "$dir" ]; then
+              echo "⚠️  WARNING: expected directory '$dir/' is missing"
+              MISSING=1
+            fi
+          done
+
+          for file in README.md README_zh-TW.md .env.example; do
+            if [ ! -f "$file" ]; then
+              echo "⚠️  WARNING: expected file '$file' is missing"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -eq 1 ]; then
+            echo "⚠️  Some expected files/directories are missing (non-blocking warning)"
+          else
+            echo "✅ All expected Hermes directories and files present."
+          fi
