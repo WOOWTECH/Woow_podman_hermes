@@ -1,289 +1,249 @@
-<div align="center">
-  <h1>WoowTech Hermes Agent — Podman</h1>
-  <p><strong>Enterprise AI Assistant · Podman Compose deployment</strong><br/>
-     <sub>Single-container architecture (v0.17.0+) · 47 CLI tools · 93 skills · Dashboard TUI as the sole chat surface</sub></p>
+# Woow Hermes Agent on rootless Podman (Quadlet + systemd)
 
-  <p>
-    <img src="https://img.shields.io/badge/Hermes_Agent-v0.19.0-blue?style=flat-square" alt="Hermes Agent v0.19.0" />
-    <img src="https://img.shields.io/badge/Podman-4.x+-orange?style=flat-square&logo=podman" alt="Podman" />
-    <img src="https://img.shields.io/badge/LLM-MiniMax_M1-purple?style=flat-square" alt="LLM" />
-    <img src="https://img.shields.io/badge/MCP-4_servers-teal?style=flat-square" alt="MCP" />
-    <img src="https://img.shields.io/badge/License-Proprietary-red?style=flat-square" alt="License" />
-  </p>
+**English** · [繁體中文](README_zh-TW.md)
 
-  <p>
-    <a href="README.md">English</a> ·
-    <a href="README_zh-TW.md">繁體中文</a>
-  </p>
-</div>
+The [Hermes Agent](https://github.com/NousResearch/hermes-agent) stack — gateway, dashboard with the
+chat TUI, and webhook receiver — as rootless Podman
+[Quadlet](https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html) units under
+`systemd --user`, from an **immutable image** built in this repo.
 
-> [!IMPORTANT]
-> **This repository ships only the Podman Compose deployment.**
-> The Kubernetes/K3s deployment lives in its sibling repo as a **Helm chart**:
-> [**WOOWTECH/Woow_k3s_hermes**](https://github.com/WOOWTECH/Woow_k3s_hermes).
->
-> This repository is one of the per-platform splits of the retired monorepo
-> `Woow_hermes_agent_docker_compose_all`. Git history from the old `podman`
-> branch is preserved here on `main`.
+> **Docker or podman-compose users:** the compose deployment (`deploy/podman/`) was removed. The last
+> compose version is kept at the tag
+> [`compose-final`](https://github.com/WOOWTECH/Woow_podman_hermes/tree/compose-final)
+> (`git clone -b compose-final https://github.com/WOOWTECH/Woow_podman_hermes.git`). It is not
+> maintained: it has no boot recovery on rootless podman, its dashboard password defaults to `admin`,
+> and it depends on `deploy.sh` mutating the running container. For Kubernetes use
+> [Woow_k3s_hermes](https://github.com/WOOWTECH/Woow_k3s_hermes).
 
----
+## Why this release exists
 
-## Overview
+The old deployment ran `deploy.sh` **against the running container**: it apt-installed tmux, pip-installed
+`ddgs`, downloaded OfficeCLI, patched the MCP OAuth code inside `/opt/hermes`, and copied skills in — mostly
+with `2>/dev/null`, so failures were invisible, and all of it was lost whenever the container was
+recreated. On the live host `podman diff hermes-agent` returned **zero** lines, so nobody could tell
+whether the MCP OAuth patches were actually applied.
 
-**WoowTech Hermes Agent** is an enterprise-grade, self-hosted AI assistant platform built on
-[Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent). It provides a
-complete AI workspace with a single Dashboard TUI chat surface (xterm.js REPL of `hermes chat`
-inside the agent container), 47 pre-installed CLI tools, 93 AI skills, and multi-LLM support —
-deployable via Podman Compose on a single host.
+Everything that touched the image now happens at build time in `container/Containerfile`, where a moved
+patch anchor or a changed download **fails the build**. Everything that touches the data volume happens in
+in-image provisioning scripts: at boot (`cont-init.d/020-woow-provision`) and once after the gateway is
+healthy (`hermes-provision.service` → `/usr/local/bin/woow-provision`).
 
-### Podman-branch operational model
+## What gets installed
 
-The stack is **100% containerized** — the Hermes Agent binary is the upstream image
-`docker.io/nousresearch/hermes-agent`, not Woowtech-authored code, so **nothing runs on the host**.
-Shell access is **host OpenSSH → `podman exec -it hermes-agent bash`**. Hermes's built-in
-Dashboard TUI (`HERMES_DASHBOARD_TUI=1`) at `http://<host>:19119` is an **app-internal** admin
-terminal, not a system shell. There is **no ttyd** in the Podman deployment (ttyd is a K3s-only
-add-on and lives in the sibling k3s repo).
+| Item | Name | Notes |
+|---|---|---|
+| Agent | `hermes-agent` (unit `hermes-agent.service`) | `localhost/woow-hermes-agent:<tag>`, built here, `Pull=never`. Gateway 8642, dashboard 9119, webhook 8644, published on 127.0.0.1 by default. |
+| Database | `hermes-postgresql` (unit `hermes-postgres.service`) | `postgres:15.19` by digest, **no host port**. |
+| Cache | `hermes-redis` (unit `hermes-redis.service`) | `redis:7.4.11-alpine` by digest, **no host port**. |
+| Provisioning | `hermes-provision.service` | oneshot, `WantedBy=hermes-agent.service`: waits for `/health`, applies the WOOWTECH config policy **once** (stamped), enables the tools and plugins, and fixes the model routes. |
+| Network | `hermes` | private bridge. |
+| Volumes | `hermes-data`, `hermes-postgres-data`, `hermes-redis-data` | the agent's state (SQLite, sessions, skills, memories) is in `hermes-data`. |
+| Settings | `~/.config/hermes/hermes.env` (0600) | provider keys and the public URL. |
+| Credentials | podman secrets `hermes-api-server-key`, `hermes-webhook-secret`, `hermes-dashboard-password`, `hermes-postgres-password` | generated at install; there is no `admin`/`admin` default any more. |
 
-### v0.17.0 breaking change
+> **PostgreSQL and Redis are parity services.** Nothing in this repo (or in the compose file before it)
+> gives the agent a connection string for either, and on the live host their volumes were empty while
+> the agent kept its state in SQLite under `/opt/data`. They are installed for parity with the k3s
+> chart and wired as `Wants=`, so they can never keep the agent from starting. If you do not need
+> them, say so in an issue and they can be dropped.
 
-The `hermes-webui` sidecar has been removed. Dashboard TUI (port `19119`) is now the only chat
-surface. Migrating from v0.16.x or earlier? See [CHANGELOG.md](CHANGELOG.md) `[0.17.0]` for
-BREAKING notes and rollback guidance.
+## Requirements
 
----
+- Linux with systemd and cgroup v2. Tested on Ubuntu 24.04.
+- Podman 4.9 or newer, rootless, plus `curl` and `git`.
+- A normal login session for the user who owns the containers, and linger (install.sh enables it).
+- About 8 GB of disk for the build (the upstream base alone is ~2.8 GB) and as much RAM as
+  `WOOW_HERMES_MEMORY` says (default 6g; 3g is enough for a small host).
+- Free ports 18642, 19119 and 18644 by default. The database and the cache publish nothing, so a
+  PostgreSQL or Redis already on `127.0.0.1:5432` / `6379` is not a conflict.
 
-## Quick Start
-
-**Prerequisites**: Podman 4.x+, `podman-compose`, 8 GB+ RAM.
+## Install
 
 ```bash
-# 1. Clone this repo
 git clone https://github.com/WOOWTECH/Woow_podman_hermes.git
 cd Woow_podman_hermes
-
-# 2. Copy and edit environment file
-cd deploy/podman
-cp .env.example .env
-vim .env    # set API keys, dashboard password, DB password
-
-# 3. Deploy
-podman-compose up -d
+scripts/install.sh                     # first run: creates ~/.config/hermes/hermes.env and stops for review
+nano ~/.config/hermes/hermes.env       # MINIMAX_API_KEY and the public dashboard URL
+scripts/install.sh                     # build the image, render, validate, start, provision, smoke
 ```
 
-Ports on the host after deploy:
+The first run builds `localhost/woow-hermes-agent:$(sed -n 's/^HERMES_IMAGE_TAG=//p' scripts/common.sh)`;
+that takes 5-15 minutes. `WOOW_HERMES_BUILD_CPUS` (plus `nice`) keeps it from starving co-located stacks.
 
-| Service              | URL                     | Purpose                                                   |
-|----------------------|-------------------------|-----------------------------------------------------------|
-| Dashboard (+ chat)   | `http://<host>:19119`   | Admin + `/chat` xterm TUI (Basic auth)                    |
-| Gateway API          | `http://<host>:18642`   | OpenAI-compatible REST API (`API_SERVER_KEY` bearer)      |
+| Option | Effect |
+|---|---|
+| `--no-llm` | Install without a provider key (platform checks only). |
+| `--accept-defaults` | On the first run, keep going with the example settings. |
+| `--set KEY=VALUE` | Store a setting first (repeatable), e.g. `--set WOOW_HERMES_MEMORY=3g`. |
+| `--no-build` / `--rebuild` | Skip the build (the tag must exist) / rebuild it (the old image is kept as `<tag>-prev`). |
+| `--rotate-secrets` | New API key, webhook secret and dashboard password, then restart the agent. Every API client, webhook sender and saved login has to be updated. |
+| `--dry-run` | Render and validate, show what would change, touch nothing. |
 
-Front both with a reverse proxy or Cloudflare Tunnel for HTTPS.
+Re-running `install.sh` is safe: with nothing changed it restarts nothing.
 
----
+## Configure
 
-## Repository Layout
+Edit `~/.config/hermes/hermes.env`, then run `scripts/install.sh` again.
 
-```
-.
-├── deploy/podman/
-│   ├── podman-compose.yml     # Pod definition: hermes-agent + postgres + redis
-│   ├── .env.example           # All required environment variables
-│   ├── deploy.sh              # 10-step automated deployment
-│   ├── README.md              # Podman-specific deployment notes
-│   └── SKILL.md               # Automation skill reference
-├── docker/
-│   ├── Dockerfile.hermes-agent  # 7-layer custom image (47 CLI tools + Playwright + CJK fonts)
-│   └── build-image.sh
-├── config/
-│   ├── golden-config.yaml     # Central Hermes config (630+ lines)
-│   ├── golden-settings.json   # Dashboard defaults
-│   ├── apply-env-fingerprint-patch.py
-│   └── fix-model-routes.py    # Adds @openai-api:* routes
-├── docs/                      # API contract, user manual (zh-TW), screenshots
-├── skills/                    # Skill definitions
-├── .github/                   # CI, CODEOWNERS, pre-push hook
-├── CONTRIBUTING.md            # Repo-isolation policy
-├── CHANGELOG.md
-└── README* (this file + zh-TW)
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | The URL the dashboard is opened from; MCP OAuth callbacks use it. Both lines must be identical. |
+| `MINIMAX_API_KEY` | empty | Required unless you install with `--no-llm`. |
+| `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `MCP_*` | empty | Optional provider and MCP keys. |
+| `WOOW_HERMES_BIND` | `127.0.0.1` | Address the three ports are published on; `all` covers IPv4 and IPv6. |
+| `WOOW_HERMES_PORT_GATEWAY` / `_DASHBOARD` / `_WEBHOOK` | `18642` / `19119` / `18644` | Host ports. |
+| `WOOW_HERMES_MEMORY` / `WOOW_HERMES_CPUS` | `6g` / `3` | Limits for the agent container. |
+| `WOOW_HERMES_IMAGE_TARGET` | `slim` | `full` adds the old 7-layer toolchain (see below). |
+| `WOOW_HERMES_BUILD_CPUS` | empty | `--cpuset-cpus` for the build, e.g. `0-2`. |
 
----
-
-## Key Features
-
-| Feature                    | Description                                                                                              |
-|----------------------------|----------------------------------------------------------------------------------------------------------|
-| **Dashboard TUI**          | Dashboard (:19119) — chat + 150+ config settings + MCP + Terminal, all in one surface                    |
-| **47 CLI Tools**           | curl, git, jq, yq, rg, fd, gcloud, gh, pandoc, ffmpeg, yt-dlp, nmap, and more                            |
-| **93 AI Skills**           | 19 categories: software-dev, creative, MLOps, Odoo ERP, research, media                                  |
-| **Multi-LLM**              | MiniMax M2.7 (primary), GPT-5.x/4.x via OpenRouter, Claude, GLM                                          |
-| **Playwright + Chromium**  | Built-in browser automation for screenshots, form filling, E2E testing                                   |
-| **Persistent Memory**      | SOUL.md (identity), USER.md (preferences), MEMORY.md (learned context)                                   |
-| **Kanban + Tasks**         | Project boards, todo lists, cron job scheduling                                                          |
-| **Insights Analytics**     | Token usage, model distribution, cost tracking                                                           |
-| **Gateway API**            | OpenAI-compatible REST API on port 18642                                                                 |
-
----
-
-## Architecture
-
-```mermaid
-graph TB
-    User["User Browser"]
-
-    subgraph Host["Podman Host"]
-        subgraph Pod["Hermes Pod (single container + sidecars)"]
-            Agent["hermes-agent<br/>:8642 Gateway API<br/>:9119 Dashboard + /chat TUI"]
-            PG["postgres:15<br/>:5432"]
-            Redis["redis:7-alpine<br/>:6379"]
-        end
-    end
-
-    subgraph LLM["LLM Providers"]
-        MM["MiniMax M2.7 (primary)"]
-        OR["OpenRouter (GPT / Claude / GLM)"]
-    end
-
-    User -->|":19119 / :18642"| Agent
-    Agent --> PG
-    Agent --> Redis
-    Agent --> MM
-    Agent --> OR
-```
-
-`podman-compose.yml` defines three services in a single pod: `hermes-agent`, `postgres`, `redis`
-(all bind-mounted or on named volumes `hermes-data` / `postgres-data` / `redis-data`).
-
----
-
-## Configuration
-
-### Environment variables (`deploy/podman/.env`)
-
-| Variable                       | Required | Description                                                     |
-|--------------------------------|----------|-----------------------------------------------------------------|
-| `MINIMAX_API_KEY`              | Yes      | MiniMax primary-model API key                                   |
-| `OPENROUTER_API_KEY`           | Yes      | OpenRouter API key for GPT/Claude/GLM                           |
-| `API_SERVER_KEY`               | Yes      | Gateway API bearer token                                        |
-| `DASHBOARD_USERNAME`           | Yes      | Dashboard Basic-auth username (default `admin`)                 |
-| `DASHBOARD_PASSWORD`           | Yes      | Dashboard Basic-auth password                                   |
-| `POSTGRES_PASSWORD`            | Yes      | PostgreSQL password                                             |
-| `HERMES_DASHBOARD_PUBLIC_URL`  | Optional | Public URL for MCP OAuth callbacks                              |
-| `HERMES_BASE_URL`              | Optional | Base URL override (used by some skills)                         |
-
-### Golden configuration
-
-`config/golden-config.yaml` is the central Hermes config (630+ lines).
-
-| Section                | Description                                          |
-|------------------------|------------------------------------------------------|
-| `platforms.api_server` | 28 model routes, CORS, API key                       |
-| `llm`                  | Model, provider, temperature, max_tokens             |
-| `mcp.servers`          | Playwright, filesystem, fetch                        |
-| `agent`                | approval_mode, tools, skills                         |
-| `dashboard`            | Auth, TUI, themes, plugins                           |
-
-### Model routing
-
-Run `config/fix-model-routes.py` after config changes to add `@openai-api:*` routes for
-OpenAI-compatible clients.
-
----
-
-## Custom Docker Image
-
-`docker/Dockerfile.hermes-agent` extends the base image with 7 layers:
-
-| Layer  | Packages                                                            | Size    |
-|--------|---------------------------------------------------------------------|---------|
-| Core   | jq, fd, rsync, mosh, git-lfs, imagemagick, nmap, dnsutils           | ~50 MB  |
-| Binary | yq v4.44.6, cloudflared, gh CLI v2.73                               | ~80 MB  |
-| Cloud  | Google Cloud SDK (gcloud, gsutil, bq)                               | ~200 MB |
-| Content| pandoc, texlive-xetex, CJK + emoji fonts                            | ~300 MB |
-| Web    | Playwright + Chromium 148, httpie, yt-dlp                           | ~400 MB |
-| Fix    | Dashboard TUI ownership fix                                         | ~0 MB   |
-| Ident  | Git config for Hermes Bot identity                                  | ~0 MB   |
-
-Build & push:
+The provider keys are the one exception to "no credentials in the env file": they are user-supplied
+and often empty, which podman secrets cannot express. Everything generated lives in a podman secret:
 
 ```bash
-cd docker
-docker build -t hermes-agent-custom:latest -f Dockerfile.hermes-agent .
-docker tag hermes-agent-custom:latest <registry>/hermes-agent-custom:latest
-docker push <registry>/hermes-agent-custom:latest
+podman secret inspect --showsecret --format '{{.SecretData}}' hermes-dashboard-password   # private terminal
+podman secret inspect --showsecret --format '{{.SecretData}}' hermes-api-server-key
 ```
 
----
+Hermes itself copies the provider keys into the data volume (`/opt/data/.env`, 0600, and OpenRouter
+into the model routes in `config.yaml`). That is how the dashboard TUI reads them; it was true before
+this release too.
 
-## MCP Integration
+## The image
 
-Hermes supports remote [MCP](https://modelcontextprotocol.io/) servers.
+`container/Containerfile` has two targets:
 
-| Server         | Auth              | Notes                          |
-|----------------|-------------------|--------------------------------|
-| Higgsfield     | OAuth 2.1 + PKCE  | Authenticate via Dashboard     |
-| Browserless    | Bearer Token      | API key in headers             |
-| Cloudflare     | OAuth 2.1 + PKCE  | Authenticate via Dashboard     |
-| WoowTech Odoo  | URL Token         | Auto-connects                  |
+- **`slim` (default)** — the pinned upstream base plus exactly what `deploy.sh` used to do to the
+  running container: tmux, the `hermes` CLI symlink, the removal of unused binaries and skill packs,
+  `ddgs` (pinned), OfficeCLI (pinned and checksummed), the two MCP OAuth `iss` patches, the pinned
+  superpowers skills seed, and the TUI ownership fix. The last build step asserts that each of them is
+  really there.
+- **`full`** — `slim` plus the toolchain from the old `docker/Dockerfile.hermes-agent` (pandoc, texlive,
+  CJK fonts, yq, gh, cloudflared, ...). The podman deployment never ran it; gcloud, Playwright, httpie
+  and yt-dlp are not ported yet. Opt in with `WOOW_HERMES_IMAGE_TARGET=full`.
 
-For OAuth flows the callback path `/api/mcp/oauth/callback/*` must be publicly reachable and
-`HERMES_DASHBOARD_PUBLIC_URL` must be set.
+```bash
+scripts/build-image.sh                 # build the tag if it is missing
+scripts/build-image.sh --force         # rebuild; the previous image is kept as <tag>-prev
+tests/patch-anchors.sh                 # check the MCP OAuth anchors against the pinned upstream tag
+```
 
----
+Upgrading the upstream base means bumping `HERMES_BASE` **and** `HERMES_IMAGE_TAG` in
+`scripts/common.sh` and the `Image=` line in `quadlet/hermes-agent.container`; CI checks that the three
+agree. The base is pinned at `v2026.8.31`, where every `iss-callback.py` anchor still exists; upstream
+`v2026.9.7` forwards `iss` itself, so moving to it means dropping that patch.
 
-## Screenshots
+## Verify
 
-See [`docs/screenshots/`](docs/screenshots/) for login, chat, model picker, skills catalog,
-memory page, Kanban, dashboard config, and mobile views.
+```bash
+tests/smoke.sh           # units, health, ports, dashboard and gateway auth, the baked-in tools,
+                         # immutability (podman diff), provisioning stamps, secret hygiene
+tests/smoke.sh --quick   # units, health, ports and /health only
+```
 
----
+The dashboard is at `http://127.0.0.1:19119/` (user `admin`); from elsewhere use
+`ssh -L 19119:127.0.0.1:19119 <host>` or a tunnel. The gateway speaks the OpenAI API at
+`http://127.0.0.1:18642/v1` with `Authorization: Bearer <hermes-api-server-key>`.
 
-## API Reference
+## Upgrade
 
-Full API documentation: [docs/api-contract.md](docs/api-contract.md).
-The Dashboard exposes 28 REST endpoints on port 9119 (config, sessions, skills, memory,
-analytics, logs, model info).
+```bash
+git pull
+scripts/upgrade.sh
+```
 
----
+Backup, unit snapshot, build, `install.sh`, smoke. On failure the previous units come back, and with
+them the previous image tag. The agent migrates its SQLite schema forward, so a rollback across a
+schema change also needs `scripts/restore.sh` with the pre-upgrade archive.
+
+## Backup and restore
+
+```bash
+scripts/backup.sh                      # stops the agent, exports hermes-data, dumps the parity database
+scripts/backup.sh --hot                # without stopping (SQLite may be mid-write)
+scripts/restore.sh --archive ~/.local/share/woow-backups/hermes/backup-<ts> --confirm-restore hermes
+```
+
+## Uninstall
+
+```bash
+scripts/uninstall.sh                             # remove the units; keep the volumes, secrets, settings
+scripts/uninstall.sh --purge                     # also delete them, after a final backup
+scripts/uninstall.sh --purge --purge-images      # and remove the locally built agent images
+```
+
+`--purge` is the only command that deletes data.
+
+## Migrating the podman-compose deployment
+
+The compose stack used generic volume names (`podman_hermes-data`, ...), so this is a **copy**
+migration, not an in-place adoption.
+
+1. **Build the image first:** `scripts/build-image.sh`. The base moves from a `main` build to the
+   pinned `v2026.8.31` release.
+2. **Stop the old stack and copy the volumes:**
+   ```bash
+   podman stop hermes-agent hermes-postgresql hermes-redis
+   podman volume export podman_hermes-data -o hermes-data.tar          # ~1.2 GB
+   podman volume create hermes-data && podman volume import hermes-data hermes-data.tar
+   ```
+   Do the same for `podman_postgres-data` → `hermes-postgres-data` and `podman_redis-data` →
+   `hermes-redis-data`. The old volumes stay untouched, which is your rollback.
+3. **Mark the config policy as already applied** (the old `deploy.sh` did it), so provisioning does not
+   re-run the `sed` policy over a config you have since changed:
+   ```bash
+   mp=$(podman volume inspect --format '{{.Mountpoint}}' hermes-data)
+   podman unshare touch "$mp/.woow-policy-v1" && podman unshare chown 1000:1000 "$mp/.woow-policy-v1"
+   ```
+4. **Import the secrets from the old `.env`,** piped, never echoed, so API clients and webhook senders
+   keep working:
+   ```bash
+   grep '^API_SERVER_KEY=' .env | cut -d= -f2- | tr -d '\n' | podman secret create hermes-api-server-key -
+   ```
+   Do the same for `WEBHOOK_SECRET` → `hermes-webhook-secret`, `DASHBOARD_PASSWORD` →
+   `hermes-dashboard-password` and `POSTGRES_PASSWORD` → `hermes-postgres-password` (that one must
+   match the initialised cluster). Move `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `GITHUB_TOKEN` and
+   `HERMES_DASHBOARD_PUBLIC_URL` into `~/.config/hermes/hermes.env`.
+5. **Rename the legacy containers** (`podman rename hermes-agent hermes-agent-legacy-$(date +%Y%m%d)`,
+   and the same for the other two) so Quadlet cannot replace them, then `scripts/install.sh` and
+   `tests/smoke.sh`.
+6. **Announce the behaviour changes:** the three ports are now on 127.0.0.1 unless you set
+   `WOOW_HERMES_BIND=all`, and the dashboard password is whatever you imported (no `admin`).
+
+## Security posture
+
+This release keeps the agent's existing (permissive) policy — approvals off, `cron_mode: yolo`,
+auto-accept, `GATEWAY_ALLOW_ALL_USERS=true`, `API_SERVER_CORS_ORIGINS=*`, `HERMES_DASHBOARD_INSECURE=1`
+— because changing it would change behaviour people depend on. What it adds is loopback-only
+publishing, generated credentials instead of `admin`/`admin`, and a dashboard that a stranger on the
+LAN can no longer reach. Reviewing that policy deserves its own issue.
+
+## Files
+
+```
+container/Containerfile            the image: slim (parity) and full targets
+container/patches/                 the MCP OAuth iss patches (they fail the build if an anchor moves)
+container/rootfs/                  in-image provisioning: cont-init hooks and /usr/local/bin/woow-provision
+container/fix-model-routes.py      idempotent model-route fix, run by woow-provision
+quadlet/                           units with @@VAR@@ tokens; quadlet/render-vars is the whitelist
+systemd/hermes-provision.service   the oneshot that runs woow-provision after the gateway is healthy
+config/hermes.env.example          template for ~/.config/hermes/hermes.env
+config/golden-config.yaml          reference config (not applied automatically)
+scripts/                           build-image, install, upgrade, uninstall, backup, restore
+scripts/lib/                       vendored quadlet-lib (do not edit; CI checks its hash)
+tests/dryrun.sh                    render + Quadlet 4.9.3 dry-run + systemd-analyze verify (CI and local)
+tests/patch-anchors.sh             the patch anchors against the pinned upstream tag
+tests/smoke.sh                     post-install checks on a host
+tests/lint-repo.sh                 credential scan, image pin parity, no live-mutation (CI)
+docs/odoo-posting.md               the Odoo cron notes that used to live in deploy/podman/SKILL.md
+```
 
 ## Troubleshooting
 
-| Issue                                | Cause                        | Solution                                                    |
-|--------------------------------------|------------------------------|-------------------------------------------------------------|
-| Dashboard TUI blank                  | Permission mismatch          | Dockerfile Layer 7 fixes this; rebuild custom image         |
-| Dashboard login rejects credentials  | Missing/wrong Basic-auth env | Verify `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`; restart |
-| Model returns wrong provider         | Missing `@openai-api:` route | Run `config/fix-model-routes.py`                            |
-| Volume full                          | Old conversations accumulate | Archive/delete old sessions via Dashboard Settings          |
-| Playwright fails                     | Chromium not installed       | Ensure the custom image is used (not the base image)        |
-| `.env` not syncing after update      | Fingerprint mismatch         | Run `config/apply-env-fingerprint-patch.py`                 |
-
----
-
-## Related Repositories
-
-| Platform                 | Repository                                                                                    |
-|--------------------------|-----------------------------------------------------------------------------------------------|
-| Podman Compose (this)    | [WOOWTECH/Woow_podman_hermes](https://github.com/WOOWTECH/Woow_podman_hermes)                 |
-| K3s / Kubernetes (Helm)  | [WOOWTECH/Woow_k3s_hermes](https://github.com/WOOWTECH/Woow_k3s_hermes)                       |
-
-The old monorepo `Woow_hermes_agent_docker_compose_all` is archived; branch-per-platform is
-retired. Full git history from the `podman` branch is preserved on this repo's `main`.
-
----
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md). Recent highlights:
-
-- **v0.17.0** (BREAKING) — removed `hermes-webui`; Dashboard TUI is the only chat surface; ports simplified to `19119` + `18642`.
-- **v0.15** — `@openai-api:*` routes, model list sync, `.env` fingerprint sync patch, Playwright E2E.
-- **v0.13** — custom Docker image (47 CLI tools + Playwright), 7-round enterprise test suite, Podman Compose deployment.
-
----
-
-## Support & License
-
-Maintained by **WOOW Tech (沃科技)**. Upstream: [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent).
-
-**License**: Proprietary — WOOW Tech deployment and customization layer. Upstream components retain their respective licenses.
+| Symptom | Check |
+|---|---|
+| The build fails on a patch anchor | Upstream moved the code: run `tests/patch-anchors.sh`, then update `container/patches/` or the pinned base. |
+| The dashboard says "No API key configured" | The TUI reads `/opt/data/.env`, which the boot hook writes from the env file. Set `MINIMAX_API_KEY` and restart `hermes-agent.service`. |
+| `hermes-provision.service` failed | `journalctl --user -u hermes-provision.service -n 100`. It waits up to 5 minutes for `/health`; the agent must be healthy first. |
+| The TUI looks stale after an upgrade | The boot hook re-syncs `/opt/data/ui-tui` when the image version changes; check `/opt/data/.woow-image-version`. |
+| A tool that `deploy.sh` used to install is missing | Add it to `container/Containerfile` and rebuild. Nothing is installed into the running container any more, by design. |
+| Units gone after logout or reboot | `loginctl show-user $USER -p Linger` must say `yes`. |

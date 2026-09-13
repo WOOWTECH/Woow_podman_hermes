@@ -1,0 +1,6 @@
+[Unit]
+Description=Woow Hermes PostgreSQL data volume
+
+[Volume]
+VolumeName=hermes-postgres-data
+Label=io.woowtech.stack=hermes

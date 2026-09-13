@@ -1,0 +1,41 @@
+#!/command/with-contenv bash
+# Boot-time provisioning of the data volume (runs as container root before s6 starts the services).
+# Replaces deploy.sh steps 5, 7, the .env half of step 8, and step 10. Idempotent; never touches
+# files outside /opt/data.
+set -euo pipefail
+DATA=/opt/data
+STAMP="$DATA/.woow-image-version"
+
+mkdir -p "$DATA"
+
+# Step 5 (fixed): the dashboard TUI runs from HERMES_TUI_DIR=/opt/data/ui-tui. deploy.sh copied it once
+# and never again, so an image upgrade kept serving the old TUI. Re-sync whenever the image changes.
+if [[ "$(cat "$STAMP" 2>/dev/null || true)" != "${WOOW_IMAGE_VERSION:-dev}" ]]; then
+  rm -rf "$DATA/ui-tui.new"
+  cp -a /opt/hermes/ui-tui "$DATA/ui-tui.new"
+  chown -R hermes:hermes "$DATA/ui-tui.new"
+  rm -rf "$DATA/ui-tui" && mv "$DATA/ui-tui.new" "$DATA/ui-tui"
+  # Step 10: caches that embed the previous image's catalog.
+  rm -f "$DATA/.skills_prompt_snapshot.json" "$DATA/skills/.bundled_manifest" \
+        "$DATA/provider_models_cache.json" "$DATA/models_dev_cache.json"
+  printf '%s\n' "${WOOW_IMAGE_VERSION:-dev}" >"$STAMP"
+fi
+
+# Step 7: seed the pinned superpowers skills only when the user has none of them yet.
+if [[ ! -f "$DATA/skills/brainstorming/SKILL.md" ]]; then
+  mkdir -p "$DATA/skills"
+  cp -a /opt/woow/seed/skills/. "$DATA/skills/"
+  chown -R hermes:hermes "$DATA/skills"
+fi
+
+# Step 8 (.env half): the TUI reads provider keys from $HERMES_HOME/.env, not from the process env.
+# Rewritten on every boot so a changed key in ~/.config/hermes/hermes.env takes effect on restart.
+umask 077
+tmp=$(mktemp "$DATA/.env.XXXXXX")
+{
+  printf 'MINIMAX_API_KEY=%s\n' "${MINIMAX_API_KEY:-}"
+  printf 'OPENROUTER_API_KEY=%s\n' "${OPENROUTER_API_KEY:-}"
+} >"$tmp"
+chown hermes:hermes "$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$DATA/.env"

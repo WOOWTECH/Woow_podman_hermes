@@ -1,7 +1,9 @@
 # Environment files with real values
 .env
 *.env
-!.env.example
+# ...except the templates and the render fixtures, which carry no real values.
+!config/*.env.example
+!tests/fixtures/*.env
 
 # Kubernetes secrets with real values
 **/01-secrets.yaml

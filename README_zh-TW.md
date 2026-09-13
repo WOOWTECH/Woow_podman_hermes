@@ -1,285 +1,230 @@
-<div align="center">
-  <h1>WoowTech Hermes Agent — Podman</h1>
-  <p><strong>企業級 AI 智慧助手 · Podman Compose 部署</strong><br/>
-     <sub>單容器架構（v0.17.0 起）· 47 個 CLI 工具 · 93 個技能 · Dashboard TUI 為唯一 chat 介面</sub></p>
+# Woow Hermes Agent：rootless Podman（Quadlet + systemd）部署
 
-  <p>
-    <img src="https://img.shields.io/badge/Hermes_Agent-v0.19.0-blue?style=flat-square" alt="Hermes Agent v0.19.0" />
-    <img src="https://img.shields.io/badge/Podman-4.x+-orange?style=flat-square&logo=podman" alt="Podman" />
-    <img src="https://img.shields.io/badge/LLM-MiniMax_M1-purple?style=flat-square" alt="LLM" />
-    <img src="https://img.shields.io/badge/MCP-4_servers-teal?style=flat-square" alt="MCP" />
-    <img src="https://img.shields.io/badge/License-Proprietary-red?style=flat-square" alt="License" />
-  </p>
+[English](README.md) · **繁體中文**
 
-  <p>
-    <a href="README.md">English</a> ·
-    <a href="README_zh-TW.md">繁體中文</a>
-  </p>
-</div>
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 堆疊（gateway、含 chat TUI 的 dashboard、
+webhook 接收器）以 rootless Podman
+[Quadlet](https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html) 單元在 `systemd --user`
+下執行，映像由本倉庫建置且**不可變**。
 
-> [!IMPORTANT]
-> **本倉庫僅提供 Podman Compose 部署方案。**
-> Kubernetes/K3s 部署已改為 **Helm chart**，位於姊妹倉庫：
-> [**WOOWTECH/Woow_k3s_hermes**](https://github.com/WOOWTECH/Woow_k3s_hermes)。
->
-> 本倉庫是舊 monorepo `Woow_hermes_agent_docker_compose_all` 按部署平台拆分後的其中一個；
-> 舊 `podman` 分支的完整 git 歷史已保留於本倉庫的 `main`。
+> **Docker 或 podman-compose 使用者：** compose 部署（`deploy/podman/`）已移除。最後一版保留在 tag
+> [`compose-final`](https://github.com/WOOWTECH/Woow_podman_hermes/tree/compose-final)
+> （`git clone -b compose-final https://github.com/WOOWTECH/Woow_podman_hermes.git`）。該 tag 不再維護：
+> 在 rootless podman 上沒有開機自復、dashboard 密碼預設為 `admin`，而且依賴 `deploy.sh` 去修改執行中的
+> 容器。Kubernetes 請用 [Woow_k3s_hermes](https://github.com/WOOWTECH/Woow_k3s_hermes)。
 
----
+## 這個版本為什麼存在
 
-## 總覽
+舊的部署方式是對**執行中的容器**跑 `deploy.sh`：apt 安裝 tmux、pip 安裝 `ddgs`、下載 OfficeCLI、在
+`/opt/hermes` 內修補 MCP OAuth 程式碼、複製 skills — 而且多半接著 `2>/dev/null`，失敗看不見，容器一旦重建
+就全部消失。在實際主機上 `podman diff hermes-agent` 回傳**零**行，沒有人能確認 MCP OAuth 修補是否真的生效。
 
-**WoowTech Hermes Agent** 是基於 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) 打造的
-企業級自建 AI 助手平台。提供完整的 AI 工作空間：單一 Dashboard TUI chat 介面
-（agent 容器內以 xterm.js 執行 `hermes chat` REPL）、47 個預裝 CLI 工具、93 個 AI 技能、
-多 LLM 支援，可透過 Podman Compose 部署於單一主機。
+現在所有動到映像的步驟都在建置期由 `container/Containerfile` 完成，錨點消失或下載內容改變都會**讓建置失敗**。
+所有動到資料卷的步驟則由映像內的佈建腳本負責：開機時（`cont-init.d/020-woow-provision`），以及 gateway
+健康後執行一次（`hermes-provision.service` → `/usr/local/bin/woow-provision`）。
 
-### Podman 分支運維模型
+## 安裝內容
 
-整個 stack **100% 容器化** — Hermes Agent 二進位是上游 image
-`docker.io/nousresearch/hermes-agent`，不是 Woowtech 自產程式碼，因此**主機上沒有任何要跑的東西**。
-Shell 入口是**主機 OpenSSH → `podman exec -it hermes-agent bash`**。
-Hermes 內建 Dashboard TUI（`HERMES_DASHBOARD_TUI=1`）在 `http://<host>:19119` 是
-**應用內建**的管理員終端，不是系統 shell。**本部署不含 ttyd**（ttyd 是 K3s 專用的附加元件，
-位於姊妹 k3s 倉庫）。
+| 項目 | 名稱 | 說明 |
+|---|---|---|
+| Agent | `hermes-agent`（單元 `hermes-agent.service`） | `localhost/woow-hermes-agent:<tag>`，本機建置、`Pull=never`。gateway 8642、dashboard 9119、webhook 8644，預設發布在 127.0.0.1。 |
+| 資料庫 | `hermes-postgresql`（單元 `hermes-postgres.service`） | `postgres:15.19`（digest 釘版），**不開主機埠**。 |
+| 快取 | `hermes-redis`（單元 `hermes-redis.service`） | `redis:7.4.11-alpine`（digest 釘版），**不開主機埠**。 |
+| 佈建 | `hermes-provision.service` | oneshot，`WantedBy=hermes-agent.service`：等待 `/health`，套用一次 WOOWTECH 設定政策（有 stamp），啟用 tools/plugins，並修正 model routes。 |
+| 網路 | `hermes` | 私有 bridge。 |
+| Volume | `hermes-data`、`hermes-postgres-data`、`hermes-redis-data` | agent 狀態（SQLite、sessions、skills、memories）在 `hermes-data`。 |
+| 設定 | `~/.config/hermes/hermes.env`（0600） | 供應商金鑰與公開 URL。 |
+| 憑證 | podman secrets `hermes-api-server-key`、`hermes-webhook-secret`、`hermes-dashboard-password`、`hermes-postgres-password` | 安裝時產生；不再有 `admin`／`admin` 預設值。 |
 
-### v0.17.0 破壞性變更
+> **PostgreSQL 與 Redis 是對齊用的服務。** 本倉庫（以及先前的 compose 檔）都沒有給 agent 任何一方的連線
+> 設定，實機上它們的資料卷是空的，agent 的狀態存在 `/opt/data` 的 SQLite。保留它們是為了與 k3s chart 對齊，
+> 並以 `Wants=` 連接，因此永遠不會阻擋 agent 啟動。若確定不需要，請開 issue 討論移除。
 
-`hermes-webui` sidecar 已移除，Dashboard TUI（port `19119`）已成為唯一 chat 介面。
-從 v0.16.x 或更早版本升級請參閱 [CHANGELOG.md](CHANGELOG.md) `[0.17.0]` 的 BREAKING 說明與回滾指引。
+## 需求
 
----
+- 有 systemd 與 cgroup v2 的 Linux。已在 Ubuntu 24.04 測試。
+- Podman 4.9 以上、rootless，另需 `curl` 與 `git`。
+- 擁有容器的使用者需以一般登入工作階段操作，並啟用 linger（install.sh 會處理）。
+- 建置約需 8 GB 磁碟（光是上游基底就約 2.8 GB），記憶體依 `WOOW_HERMES_MEMORY`（預設 6g；小主機用 3g 即可）。
+- 預設需要空閒的 18642、19119、18644。資料庫與快取不開任何主機埠，因此主機上既有的
+  `127.0.0.1:5432`／`6379` 不會衝突。
 
-## 快速開始
-
-**前置需求**：Podman 4.x+、`podman-compose`、8 GB+ RAM。
+## 安裝
 
 ```bash
-# 1. Clone 本倉庫
 git clone https://github.com/WOOWTECH/Woow_podman_hermes.git
 cd Woow_podman_hermes
-
-# 2. 複製並編輯環境變數檔
-cd deploy/podman
-cp .env.example .env
-vim .env    # 填入 API 金鑰、Dashboard 密碼、DB 密碼
-
-# 3. 部署
-podman-compose up -d
+scripts/install.sh                     # 第一次：建立 ~/.config/hermes/hermes.env 後停下讓你檢查
+nano ~/.config/hermes/hermes.env       # 填 MINIMAX_API_KEY 與 dashboard 公開 URL
+scripts/install.sh                     # 建置映像、產生單元、驗證、啟動、佈建、smoke
 ```
 
-部署後主機上的埠：
+第一次會建置 `localhost/woow-hermes-agent:$(sed -n 's/^HERMES_IMAGE_TAG=//p' scripts/common.sh)`，約 5-15
+分鐘；`WOOW_HERMES_BUILD_CPUS`（與 `nice`）可避免建置搶走其他服務的資源。
 
-| 服務                  | URL                     | 用途                                                        |
-|-----------------------|-------------------------|-------------------------------------------------------------|
-| Dashboard（含 chat）  | `http://<host>:19119`   | 管理面板 + `/chat` xterm TUI（Basic auth）                  |
-| Gateway API           | `http://<host>:18642`   | OpenAI 相容 REST API（`API_SERVER_KEY` bearer）             |
+| 選項 | 作用 |
+|---|---|
+| `--no-llm` | 不需供應商金鑰即可安裝（只做平台檢查）。 |
+| `--accept-defaults` | 第一次執行時直接採用範例設定繼續。 |
+| `--set KEY=VALUE` | 先寫入設定（可重複），例如 `--set WOOW_HERMES_MEMORY=3g`。 |
+| `--no-build` / `--rebuild` | 略過建置（tag 必須已存在）／重新建置（舊映像保留為 `<tag>-prev`）。 |
+| `--rotate-secrets` | 重新產生 API key、webhook secret 與 dashboard 密碼後重啟 agent；所有 API 用戶端、webhook 發送端與已儲存的登入都要跟著更新。 |
+| `--dry-run` | 只產生與驗證、列出會變更的內容，不動任何東西。 |
 
-兩者建議前面掛反向代理或 Cloudflare Tunnel 提供 HTTPS。
+重複執行 `install.sh` 是安全的：沒有變更時不會重啟任何東西。
 
----
+## 設定
 
-## 倉庫結構
+編輯 `~/.config/hermes/hermes.env`，再執行一次 `scripts/install.sh`。
 
-```
-.
-├── deploy/podman/
-│   ├── podman-compose.yml     # Pod 定義：hermes-agent + postgres + redis
-│   ├── .env.example           # 所有必要環境變數
-│   ├── deploy.sh              # 10 步驟自動化部署
-│   ├── README.md              # Podman 部署細節
-│   └── SKILL.md               # 自動化 skill 參考
-├── docker/
-│   ├── Dockerfile.hermes-agent  # 7 層自訂 image（47 CLI + Playwright + 中文字型）
-│   └── build-image.sh
-├── config/
-│   ├── golden-config.yaml     # Hermes 中央配置（630+ 行）
-│   ├── golden-settings.json   # Dashboard 預設值
-│   ├── apply-env-fingerprint-patch.py
-│   └── fix-model-routes.py    # 補齊 @openai-api:* 路由
-├── docs/                      # API 合約、繁中使用手冊、截圖
-├── skills/                    # 技能定義
-├── .github/                   # CI、CODEOWNERS、pre-push hook
-├── CONTRIBUTING.md            # 倉庫隔離政策
-├── CHANGELOG.md
-└── README* (本檔 + zh-TW)
-```
+| 鍵 | 預設 | 說明 |
+|---|---|---|
+| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | 開啟 dashboard 的 URL；MCP OAuth callback 會用到。兩行必須相同。 |
+| `MINIMAX_API_KEY` | 空 | 除非以 `--no-llm` 安裝，否則必填。 |
+| `OPENROUTER_API_KEY`、`GITHUB_TOKEN`、`MCP_*` | 空 | 選用的供應商與 MCP 金鑰。 |
+| `WOOW_HERMES_BIND` | `127.0.0.1` | 三個埠發布的位址；`all` 同時涵蓋 IPv4 與 IPv6。 |
+| `WOOW_HERMES_PORT_GATEWAY` / `_DASHBOARD` / `_WEBHOOK` | `18642` / `19119` / `18644` | 主機埠。 |
+| `WOOW_HERMES_MEMORY` / `WOOW_HERMES_CPUS` | `6g` / `3` | agent 容器的限制。 |
+| `WOOW_HERMES_IMAGE_TARGET` | `slim` | `full` 會加上舊的 7 層工具鏈（見下）。 |
+| `WOOW_HERMES_BUILD_CPUS` | 空 | 建置用的 `--cpuset-cpus`，例如 `0-2`。 |
 
----
-
-## 核心功能
-
-| 功能                        | 說明                                                                                          |
-|-----------------------------|-----------------------------------------------------------------------------------------------|
-| **Dashboard TUI**           | Dashboard（:19119）— chat + 150+ 配置項 + MCP + Terminal，一站式介面                          |
-| **47 個 CLI 工具**          | curl、git、jq、yq、rg、fd、gcloud、gh、pandoc、ffmpeg、yt-dlp、nmap 等                        |
-| **93 個 AI 技能**           | 19 個類別：軟體開發、創意、MLOps、Odoo ERP、研究、媒體                                        |
-| **多 LLM 支援**             | MiniMax M2.7（主要）、GPT-5.x/4.x via OpenRouter、Claude、GLM                                 |
-| **Playwright + Chromium**   | 內建瀏覽器自動化，可截圖、填表、E2E 測試                                                      |
-| **持久化記憶**              | SOUL.md（身分）、USER.md（偏好）、MEMORY.md（學習到的上下文）                                 |
-| **Kanban + Tasks**          | 專案看板、待辦清單、cron 排程                                                                 |
-| **Insights 分析**           | Token 用量、模型分佈、成本追蹤                                                                |
-| **Gateway API**             | Port 18642，OpenAI 相容 REST API                                                              |
-
----
-
-## 系統架構
-
-```mermaid
-graph TB
-    User["使用者瀏覽器"]
-
-    subgraph Host["Podman 主機"]
-        subgraph Pod["Hermes Pod（單容器 + sidecars）"]
-            Agent["hermes-agent<br/>:8642 Gateway API<br/>:9119 Dashboard + /chat TUI"]
-            PG["postgres:15<br/>:5432"]
-            Redis["redis:7-alpine<br/>:6379"]
-        end
-    end
-
-    subgraph LLM["LLM 供應商"]
-        MM["MiniMax M2.7（主要）"]
-        OR["OpenRouter（GPT / Claude / GLM）"]
-    end
-
-    User -->|":19119 / :18642"| Agent
-    Agent --> PG
-    Agent --> Redis
-    Agent --> MM
-    Agent --> OR
-```
-
-`podman-compose.yml` 於單一 pod 內定義三個服務：`hermes-agent`、`postgres`、`redis`
-（全部以 bind mount 或 named volume `hermes-data` / `postgres-data` / `redis-data` 保存資料）。
-
----
-
-## 配置
-
-### 環境變數（`deploy/podman/.env`）
-
-| 變數                            | 必填 | 說明                                                     |
-|---------------------------------|------|----------------------------------------------------------|
-| `MINIMAX_API_KEY`               | 是   | MiniMax 主模型 API 金鑰                                  |
-| `OPENROUTER_API_KEY`            | 是   | OpenRouter API 金鑰（GPT/Claude/GLM）                    |
-| `API_SERVER_KEY`                | 是   | Gateway API bearer token                                 |
-| `DASHBOARD_USERNAME`            | 是   | Dashboard Basic-auth 帳號（預設 `admin`）                |
-| `DASHBOARD_PASSWORD`            | 是   | Dashboard Basic-auth 密碼                                |
-| `POSTGRES_PASSWORD`             | 是   | PostgreSQL 密碼                                          |
-| `HERMES_DASHBOARD_PUBLIC_URL`   | 選填 | MCP OAuth 回呼所需的對外 URL                             |
-| `HERMES_BASE_URL`               | 選填 | Base URL 覆蓋（某些技能會用）                            |
-
-### Golden 配置
-
-`config/golden-config.yaml` 是 Hermes 中央配置檔（630+ 行）。
-
-| 區塊                   | 說明                                                    |
-|------------------------|---------------------------------------------------------|
-| `platforms.api_server` | 28 條模型路由、CORS、API 金鑰                           |
-| `llm`                  | 模型、供應商、temperature、max_tokens                   |
-| `mcp.servers`          | Playwright、filesystem、fetch                           |
-| `agent`                | approval_mode、tools、skills                            |
-| `dashboard`            | Auth、TUI、themes、plugins                              |
-
-### 模型路由
-
-修改配置後執行 `config/fix-model-routes.py` 為 OpenAI 相容客戶端補上 `@openai-api:*` 路由。
-
----
-
-## 自訂 Docker 映像
-
-`docker/Dockerfile.hermes-agent` 在基底映像上疊加 7 層：
-
-| 層次    | 套件                                                             | 大小     |
-|---------|------------------------------------------------------------------|----------|
-| Core    | jq、fd、rsync、mosh、git-lfs、imagemagick、nmap、dnsutils        | ~50 MB   |
-| Binary  | yq v4.44.6、cloudflared、gh CLI v2.73                            | ~80 MB   |
-| Cloud   | Google Cloud SDK（gcloud、gsutil、bq）                           | ~200 MB  |
-| Content | pandoc、texlive-xetex、中文與 emoji 字型                         | ~300 MB  |
-| Web     | Playwright + Chromium 148、httpie、yt-dlp                        | ~400 MB  |
-| Fix     | Dashboard TUI 權限修正                                           | ~0 MB    |
-| Ident   | Hermes Bot 的 Git 身分設定                                       | ~0 MB    |
-
-建置與推送：
+供應商金鑰是「env 檔不放憑證」的唯一例外：它們由使用者提供、而且經常是空值，podman secret 無法表達空值。
+所有自動產生的憑證都在 podman secret：
 
 ```bash
-cd docker
-docker build -t hermes-agent-custom:latest -f Dockerfile.hermes-agent .
-docker tag hermes-agent-custom:latest <registry>/hermes-agent-custom:latest
-docker push <registry>/hermes-agent-custom:latest
+podman secret inspect --showsecret --format '{{.SecretData}}' hermes-dashboard-password   # 私人終端機
+podman secret inspect --showsecret --format '{{.SecretData}}' hermes-api-server-key
 ```
 
----
+Hermes 本身會把供應商金鑰寫進資料卷（`/opt/data/.env`，0600；OpenRouter 還會寫進 `config.yaml` 的 model
+routes），dashboard TUI 就是從那裡讀取的；這在本版之前也是如此。
 
-## MCP 整合
+## 映像
 
-Hermes 支援連接遠端 [MCP](https://modelcontextprotocol.io/) 伺服器。
+`container/Containerfile` 有兩個 target：
 
-| 伺服器          | Auth              | 備註                       |
-|-----------------|-------------------|----------------------------|
-| Higgsfield      | OAuth 2.1 + PKCE  | 從 Dashboard 完成授權      |
-| Browserless     | Bearer Token      | API key 放在 header        |
-| Cloudflare      | OAuth 2.1 + PKCE  | 從 Dashboard 完成授權      |
-| WoowTech Odoo   | URL Token         | 自動連線                   |
+- **`slim`（預設）** — 釘版的上游基底，加上舊 `deploy.sh` 對執行中容器做的那些事：tmux、`hermes` CLI
+  symlink、移除未用到的二進位與 skill 包、釘版的 `ddgs`、釘版並驗證校驗碼的 OfficeCLI、兩個 MCP OAuth
+  `iss` 修補、釘版的 superpowers skills 種子，以及 TUI 擁有權修正。最後一個建置步驟會逐項驗證它們真的存在。
+- **`full`** — `slim` 再加上舊 `docker/Dockerfile.hermes-agent` 的工具鏈（pandoc、texlive、CJK 字型、yq、
+  gh、cloudflared 等）。podman 部署從未真的跑過它；gcloud、Playwright、httpie 與 yt-dlp 尚未移植。可用
+  `WOOW_HERMES_IMAGE_TARGET=full` 選用。
 
-OAuth 流程需要 callback path `/api/mcp/oauth/callback/*` 對外可達，並設定
-`HERMES_DASHBOARD_PUBLIC_URL`。
+```bash
+scripts/build-image.sh                 # tag 不存在時才建置
+scripts/build-image.sh --force         # 重新建置；舊映像保留為 <tag>-prev
+tests/patch-anchors.sh                 # 對照釘版的上游 tag 檢查 MCP OAuth 錨點
+```
 
----
+升級上游基底時，必須同時更新 `scripts/common.sh` 的 `HERMES_BASE` 與 `HERMES_IMAGE_TAG`，以及
+`quadlet/hermes-agent.container` 的 `Image=`；CI 會檢查三者一致。基底釘在 `v2026.8.31`，該版本
+`iss-callback.py` 的每個錨點都還在；上游 `v2026.9.7` 已自行轉送 `iss`，升到該版本就必須移除那個修補。
 
-## 截圖
+## 驗證
 
-參閱 [`docs/screenshots/`](docs/screenshots/)：登入、聊天、模型選擇器、技能目錄、
-記憶頁、Kanban、Dashboard 配置、行動裝置樣式。
+```bash
+tests/smoke.sh           # 單元、健康、埠、dashboard 與 gateway 認證、內建工具、
+                         # 不可變性（podman diff）、佈建 stamp、密碼外洩檢查
+tests/smoke.sh --quick   # 只檢查單元、健康、埠與 /health
+```
 
----
+Dashboard 在 `http://127.0.0.1:19119/`（使用者 `admin`）；從其他機器請用
+`ssh -L 19119:127.0.0.1:19119 <host>` 或 tunnel。Gateway 提供 OpenAI 相容 API
+`http://127.0.0.1:18642/v1`，需帶 `Authorization: Bearer <hermes-api-server-key>`。
 
-## API 參考
+## 升級
 
-完整 API 文件：[docs/api-contract.md](docs/api-contract.md)。
-Dashboard（port 9119）共 28 個 REST 端點（config、sessions、skills、memory、
-analytics、logs、model info）。
+```bash
+git pull
+scripts/upgrade.sh
+```
 
----
+備份、單元快照、建置、`install.sh`、smoke。失敗時放回原本的單元，也就回到先前的映像 tag。agent 會把
+SQLite schema 向前遷移，跨 schema 變更的回復還需要用 `scripts/restore.sh` 還原升級前的封存檔。
+
+## 備份與還原
+
+```bash
+scripts/backup.sh                      # 停止 agent、匯出 hermes-data、dump 對齊用資料庫
+scripts/backup.sh --hot                # 不停止（SQLite 可能寫到一半）
+scripts/restore.sh --archive ~/.local/share/woow-backups/hermes/backup-<ts> --confirm-restore hermes
+```
+
+## 解除安裝
+
+```bash
+scripts/uninstall.sh                             # 移除單元；保留 volume、secrets、設定
+scripts/uninstall.sh --purge                     # 另外刪除它們，並先做最後備份
+scripts/uninstall.sh --purge --purge-images      # 再移除本機建置的 agent 映像
+```
+
+`--purge` 是唯一會刪除資料的指令。
+
+## 從 podman-compose 部署遷移
+
+compose 使用的是通用 volume 名稱（`podman_hermes-data` 等），所以這是**複製**遷移，不是原地沿用。
+
+1. **先建置映像：** `scripts/build-image.sh`。基底會從某個 `main` 版本改為釘版的 `v2026.8.31` 發行版。
+2. **停止舊堆疊並複製 volume：**
+   ```bash
+   podman stop hermes-agent hermes-postgresql hermes-redis
+   podman volume export podman_hermes-data -o hermes-data.tar          # 約 1.2 GB
+   podman volume create hermes-data && podman volume import hermes-data hermes-data.tar
+   ```
+   `podman_postgres-data` → `hermes-postgres-data`、`podman_redis-data` → `hermes-redis-data` 同理。
+   舊 volume 保持不動，就是你的回復路徑。
+3. **標記設定政策已套用過**（舊的 `deploy.sh` 已做過），避免佈建再次對你後來改過的設定跑 `sed`：
+   ```bash
+   mp=$(podman volume inspect --format '{{.Mountpoint}}' hermes-data)
+   podman unshare touch "$mp/.woow-policy-v1" && podman unshare chown 1000:1000 "$mp/.woow-policy-v1"
+   ```
+4. **從舊的 `.env` 匯入 secrets**，一律用管線、不要 echo，讓 API 客戶端與 webhook 發送端繼續可用：
+   ```bash
+   grep '^API_SERVER_KEY=' .env | cut -d= -f2- | tr -d '\n' | podman secret create hermes-api-server-key -
+   ```
+   `WEBHOOK_SECRET` → `hermes-webhook-secret`、`DASHBOARD_PASSWORD` → `hermes-dashboard-password`、
+   `POSTGRES_PASSWORD` → `hermes-postgres-password`（必須與已初始化的叢集相符）同理。
+   `MINIMAX_API_KEY`、`OPENROUTER_API_KEY`、`GITHUB_TOKEN` 與 `HERMES_DASHBOARD_PUBLIC_URL` 則搬到
+   `~/.config/hermes/hermes.env`。
+5. **把舊容器改名**（`podman rename hermes-agent hermes-agent-legacy-$(date +%Y%m%d)`，另外兩個同理），
+   避免被 Quadlet 取代，然後執行 `scripts/install.sh` 與 `tests/smoke.sh`。
+6. **公告行為變更：** 三個埠現在預設只在 127.0.0.1（除非設 `WOOW_HERMES_BIND=all`），dashboard 密碼是你
+   匯入的那一組（不再是 `admin`）。
+
+## 安全性現況
+
+本版保留 agent 既有（寬鬆）的政策 — 關閉 approvals、`cron_mode: yolo`、自動接受、
+`GATEWAY_ALLOW_ALL_USERS=true`、`API_SERVER_CORS_ORIGINS=*`、`HERMES_DASHBOARD_INSECURE=1` — 因為改動它
+會改變既有使用者依賴的行為。本版新增的是：只在 loopback 發布、以產生的憑證取代 `admin`／`admin`，以及區網
+上的陌生人再也連不到 dashboard。檢討該政策值得另開 issue 處理。
+
+## 檔案
+
+```
+container/Containerfile            映像：slim（對齊）與 full 兩個 target
+container/patches/                 MCP OAuth iss 修補（錨點消失時讓建置失敗）
+container/rootfs/                  映像內佈建：cont-init hooks 與 /usr/local/bin/woow-provision
+container/fix-model-routes.py      冪等的 model route 修正，由 woow-provision 執行
+quadlet/                           帶 @@VAR@@ 標記的單元；quadlet/render-vars 為白名單
+systemd/hermes-provision.service   gateway 健康後執行 woow-provision 的 oneshot
+config/hermes.env.example          ~/.config/hermes/hermes.env 的範本
+config/golden-config.yaml          參考設定（不會自動套用）
+scripts/                           build-image、install、upgrade、uninstall、backup、restore
+scripts/lib/                       內嵌的 quadlet-lib（請勿修改；CI 會檢查其雜湊）
+tests/dryrun.sh                    產生單元 + Quadlet 4.9.3 dry-run + systemd-analyze verify（CI 與本機）
+tests/patch-anchors.sh             對照釘版上游 tag 檢查修補錨點
+tests/smoke.sh                     主機上的安裝後檢查
+tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認不再有 live mutation（CI）
+docs/odoo-posting.md               原本放在 deploy/podman/SKILL.md 的 Odoo cron 筆記
+```
 
 ## 疑難排解
 
-| 問題                                | 原因                             | 解法                                                        |
-|-------------------------------------|----------------------------------|-------------------------------------------------------------|
-| Dashboard TUI 空白                  | 權限錯誤                         | Dockerfile Layer 7 已修，需重建自訂 image                    |
-| Dashboard 登入被拒                  | Basic-auth env 未設或錯誤        | 確認 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 後重啟      |
-| 模型走錯供應商                      | 缺 `@openai-api:` 路由           | 執行 `config/fix-model-routes.py`                            |
-| Volume 塞滿                         | 舊對話累積                       | 從 Dashboard 設定頁封存/刪除舊 session                       |
-| Playwright 失敗                     | Chromium 未安裝                  | 確認使用自訂 image（非基底 image）                           |
-| `.env` 更新後未同步                 | Fingerprint 不一致               | 執行 `config/apply-env-fingerprint-patch.py`                 |
-
----
-
-## 相關倉庫
-
-| 部署平台                    | 倉庫                                                                                            |
-|-----------------------------|-------------------------------------------------------------------------------------------------|
-| Podman Compose（本倉庫）    | [WOOWTECH/Woow_podman_hermes](https://github.com/WOOWTECH/Woow_podman_hermes)                   |
-| K3s / Kubernetes（Helm）    | [WOOWTECH/Woow_k3s_hermes](https://github.com/WOOWTECH/Woow_k3s_hermes)                         |
-
-舊 monorepo `Woow_hermes_agent_docker_compose_all` 已封存；branch-per-platform 已淘汰。
-舊 `podman` 分支的完整 git 歷史已保留於本倉庫 `main`。
-
----
-
-## 更新日誌
-
-見 [CHANGELOG.md](CHANGELOG.md)。近期重點：
-
-- **v0.17.0**（BREAKING）— 移除 `hermes-webui`；Dashboard TUI 成為唯一 chat 介面；埠簡化為 `19119` + `18642`。
-- **v0.15** — 補上 `@openai-api:*` 路由、同步模型清單、`.env` fingerprint sync patch、Playwright E2E。
-- **v0.13** — 自訂 Docker image（47 CLI + Playwright）、7 輪企業級測試套件、Podman Compose 部署。
-
----
-
-## 支援與授權
-
-由 **WOOW Tech（沃科技）** 維護。上游：[Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent)。
-
-**授權**：Proprietary — WOOW Tech 部署與客製化層。上游元件保留各自的授權條款。
+| 症狀 | 檢查 |
+|---|---|
+| 建置在某個修補錨點失敗 | 上游改動了程式碼：執行 `tests/patch-anchors.sh`，再更新 `container/patches/` 或釘版的基底。 |
+| Dashboard 顯示 "No API key configured" | TUI 讀的是 `/opt/data/.env`，由開機 hook 從 env 檔寫入。設好 `MINIMAX_API_KEY` 後重啟 `hermes-agent.service`。 |
+| `hermes-provision.service` 失敗 | `journalctl --user -u hermes-provision.service -n 100`。它最多等 5 分鐘的 `/health`，agent 必須先健康。 |
+| 升級後 TUI 看起來是舊的 | 映像版本改變時開機 hook 會重新同步 `/opt/data/ui-tui`；檢查 `/opt/data/.woow-image-version`。 |
+| 少了某個以前 `deploy.sh` 會裝的工具 | 把它加進 `container/Containerfile` 後重建。依設計，現在不會再往執行中的容器安裝任何東西。 |
+| 登出或重開機後單元消失 | `loginctl show-user $USER -p Linger` 必須是 `yes`。 |

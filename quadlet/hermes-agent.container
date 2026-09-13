@@ -1,0 +1,82 @@
+# Woow Hermes Agent - gateway (:8642), dashboard + chat TUI (:9119), webhook receiver (:8644).
+#
+# Runs an immutable local image built from container/Containerfile by scripts/build-image.sh (or the
+# CI-published GHCR image once that exists). Everything deploy.sh used to do with `podman exec`
+# against the live container is now either baked into the image (tmux, ddgs, OfficeCLI, CLI symlink,
+# skill trims, MCP OAuth iss patches, TUI ownership fix) or done by in-image provisioning scripts
+# (cont-init 020-woow-provision at boot; hermes-provision.service after the gateway is healthy).
+#
+# Agent state lives in SQLite under /opt/data (state.db, kanban.db, response_store.db). Postgres and
+# Redis are started alongside for parity with the compose stack; the agent is given no connection
+# settings for them, so they are Wants= (soft), not Requires=.
+[Unit]
+Description=Woow Hermes Agent
+Documentation=https://github.com/WOOWTECH/Woow_podman_hermes
+Wants=hermes-postgres.service hermes-redis.service
+After=hermes-postgres.service hermes-redis.service
+
+[Container]
+ContainerName=hermes-agent
+Image=localhost/woow-hermes-agent:v2026.8.31-woow1
+Pull=never
+Network=hermes.network
+HostName=hermes-agent
+Label=io.woowtech.stack=hermes
+Exec=gateway run
+
+Volume=hermes-data.volume:/opt/data
+ShmSize=1g
+DNS=1.1.1.1
+DNS=8.8.8.8
+# Quadlet 4.9.3 has no Memory=/Cpus= keys; the values come from the env file at install time.
+PodmanArgs=--memory=@@WOOW_HERMES_MEMORY@@ --cpus=@@WOOW_HERMES_CPUS@@
+
+PublishPort=@@HERMES_PUBLISH_GATEWAY@@:8642
+PublishPort=@@HERMES_PUBLISH_DASHBOARD@@:9119
+PublishPort=@@HERMES_PUBLISH_WEBHOOK@@:8644
+
+# --- non-secret runtime settings (same values the compose file set) ---
+Environment=HERMES_DASHBOARD=1
+Environment=HERMES_DASHBOARD_TUI=1
+Environment=HERMES_DASHBOARD_INSECURE=1
+Environment=HERMES_DASHBOARD_HOST=0.0.0.0
+Environment=HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+Environment=HERMES_TUI_DIR=/opt/data/ui-tui
+Environment=API_SERVER_ENABLED=true
+Environment=API_SERVER_HOST=0.0.0.0
+Environment=API_SERVER_CORS_ORIGINS=*
+Environment=WEBHOOK_ENABLED=true
+Environment=WEBHOOK_PORT=8644
+Environment=GATEWAY_ALLOW_ALL_USERS=true
+# Container-side ids. Rootless: container uid 1000 is a subuid on the host, never the host user.
+Environment=HERMES_UID=1000
+Environment=HERMES_GID=1000
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/data/playwright-browsers
+Environment=DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
+Environment=NODE_OPTIONS=--max-old-space-size=4096
+Environment=PATH=/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# --- user-supplied values: public URL, LLM provider keys, GitHub token (0600 file, edited by the user) ---
+EnvironmentFile=%h/.config/hermes/hermes.env
+# --- generated secrets (install.sh creates them; never in a file in the repo or the unit) ---
+Secret=hermes-api-server-key,type=env,target=API_SERVER_KEY
+Secret=hermes-webhook-secret,type=env,target=WEBHOOK_SECRET
+Secret=hermes-dashboard-password,type=env,target=HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8642/health
+HealthInterval=15s
+HealthTimeout=5s
+HealthRetries=8
+HealthStartPeriod=90s
+PodmanArgs=--stop-timeout=30
+
+[Service]
+# A container stopped by systemd is stopped with SIGTERM: an entrypoint that does not
+# trap it exits 143 (128+15), which would leave the unit failed after a clean stop.
+SuccessExitStatus=143
+Restart=always
+TimeoutStartSec=900
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

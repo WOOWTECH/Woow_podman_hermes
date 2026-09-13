@@ -1,0 +1,6 @@
+[Unit]
+Description=Woow Hermes Redis data volume
+
+[Volume]
+VolumeName=hermes-redis-data
+Label=io.woowtech.stack=hermes
