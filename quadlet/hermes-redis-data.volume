@@ -1,6 +1,8 @@
+# Rendered from WOOW_HERMES_REDIS_VOLUME; scripts/migrate-legacy.sh points it at the compose-era
+# podman_redis-data so the append-only file is adopted rather than started empty.
 [Unit]
 Description=Woow Hermes Redis data volume
 
 [Volume]
-VolumeName=hermes-redis-data
+VolumeName=@@WOOW_HERMES_REDIS_VOLUME@@
 Label=io.woowtech.stack=hermes

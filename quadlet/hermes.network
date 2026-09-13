@@ -1,5 +1,13 @@
-# A dedicated name. The compose stack ran from deploy/podman/, so podman-compose named its network
-# "podman_default" and its volumes "podman_*"; those generic names are not carried forward.
+# A dedicated name, and deliberately NOT the compose-era one. The compose stack ran from
+# deploy/podman/, so podman-compose derived the project name "podman" and called its network
+# "podman_default" - a name that reads like podman's own default network and does not belong to any
+# one app. The volumes are adopted by name (see hermes-data.volume) because they hold data; a
+# network holds none, so a fresh "hermes" is created and podman_default is left alone for the
+# rollback.
+#
+# WARNING for anyone cleaning up: on woowtechopenclaw the network podman_default IS the hermes
+# stack's network. It is not a stray podman leftover and removing it breaks the legacy stack and
+# every rollback that depends on it.
 [Unit]
 Description=Woow Hermes network
 

@@ -5,8 +5,13 @@
 # render_args <envfile>: QL_ENV is already loaded from <envfile>; sets RENDER_ARGS=(KEY=VALUE...) and
 # validates the values that are rendered straight from the env file.
 render_args() {
-  local bind prefix name port
+  local bind prefix name port vol
   local -A seen=()
+  # Volume names reach the .volume units verbatim, so validate them the way podman would: a bad
+  # value here is a stack pointed at a different (probably empty) volume, not a render error.
+  for vol in DATA POSTGRES REDIS; do
+    ql_assert_match "WOOW_HERMES_${vol}_VOLUME" "$(ql_env_get "WOOW_HERMES_${vol}_VOLUME")" '[a-zA-Z0-9][a-zA-Z0-9_.-]*'
+  done
   bind=$(ql_env_get WOOW_HERMES_BIND)
   ql_assert_match WOOW_HERMES_BIND "$bind" 'all|[0-9]{1,3}(\.[0-9]{1,3}){3}'
   ql_assert_match WOOW_HERMES_MEMORY "$(ql_env_get WOOW_HERMES_MEMORY)" '[0-9]+[bkmgBKMG]?'

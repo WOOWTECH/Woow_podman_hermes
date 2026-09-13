@@ -1,9 +1,13 @@
 # HERMES_HOME: SQLite state, sessions, skills, memories, ui-tui copy, playwright browsers.
-# A legacy compose host copies podman_hermes-data into this volume (scripts/migrate-legacy.sh) and
-# keeps the old volume untouched for rollback.
+#
+# VolumeName= is rendered from WOOW_HERMES_DATA_VOLUME so an existing deployment can be adopted
+# where it is (STANDARD 5 and 7): scripts/migrate-legacy.sh sets it to the compose-era name
+# podman_hermes-data and the 1.3 GB of agent state is never copied. A fresh install gets the
+# default, hermes-data. Without VolumeName= at all Quadlet would call it systemd-hermes-data and
+# every host would silently start on an empty volume.
 [Unit]
 Description=Woow Hermes data volume (/opt/data)
 
 [Volume]
-VolumeName=hermes-data
+VolumeName=@@WOOW_HERMES_DATA_VOLUME@@
 Label=io.woowtech.stack=hermes

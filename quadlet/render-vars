@@ -6,3 +6,9 @@ HERMES_PUBLISH_WEBHOOK
 # Taken from ~/.config/hermes/hermes.env (validated by scripts/render-args.sh):
 WOOW_HERMES_MEMORY
 WOOW_HERMES_CPUS
+# Volume names, so an existing compose deployment can be adopted in place
+# (scripts/migrate-legacy.sh sets them to podman_hermes-data / podman_postgres-data /
+# podman_redis-data; a fresh install keeps the defaults of config/hermes.env.example):
+WOOW_HERMES_DATA_VOLUME
+WOOW_HERMES_POSTGRES_VOLUME
+WOOW_HERMES_REDIS_VOLUME

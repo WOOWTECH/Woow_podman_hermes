@@ -1,6 +1,8 @@
+# Rendered from WOOW_HERMES_POSTGRES_VOLUME; scripts/migrate-legacy.sh points it at the
+# compose-era podman_postgres-data so the cluster is adopted rather than re-initialised.
 [Unit]
 Description=Woow Hermes PostgreSQL data volume
 
 [Volume]
-VolumeName=hermes-postgres-data
+VolumeName=@@WOOW_HERMES_POSTGRES_VOLUME@@
 Label=io.woowtech.stack=hermes

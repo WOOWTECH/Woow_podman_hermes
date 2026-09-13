@@ -14,6 +14,17 @@ BACKUP_ROOT=$HOME/.local/share/woow-backups/$APP
 CONTAINERS=("hermes-agent:hermes-agent.service" "hermes-postgresql:hermes-postgres.service" "hermes-redis:hermes-redis.service")
 # env keys allowed to carry user-supplied credentials (ERE on the whole key; empty = none)
 ENV_CREDENTIAL_ALLOW='(MINIMAX_API_KEY|OPENROUTER_API_KEY|GITHUB_TOKEN|MCP_[A-Z0-9_]+)'
+# scripts/migrate-legacy.sh, capture path (STANDARD 7a): containers whose own deploy or upgrade
+# script writes into the running container, so a capture must commit the writable layer first.
+# The compose-era deploy/podman/deploy.sh apt-installed tmux, uv-installed ddgs into the agent venv,
+# downloaded OfficeCLI, symlinked into /usr/local/bin, deleted skill packs under /opt/hermes and
+# patched Python sources there - all with `podman exec` against hermes-agent. The live container on
+# woowtechopenclaw measures 42 672 686 bytes / 844 files of writable layer as a result, so a capture
+# without --commit would hand a rollback a container missing every one of those changes.
+LEGACY_COMMIT_ALWAYS='hermes-agent'
+# ...and the measured writable-layer size above which any container is committed anyway. The live
+# hermes-postgresql is 1 087 119 bytes, just over this, and is committed for that reason alone.
+LEGACY_COMMIT_RW_BYTES=1048576
 # the agent image: one tag per base + patch set, so an upgrade keeps the previous image for rollback.
 # tests/dryrun.local.sh checks both against quadlet/hermes-agent.container and container/Containerfile.
 HERMES_IMAGE_TAG=v2026.8.31-woow1
