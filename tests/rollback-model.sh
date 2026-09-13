@@ -101,6 +101,15 @@ mk_volume() {
   printf '%s|2026-08-28 08:31:22.941209879 +0800 CST' "$mp" >"$SHIM_STATE/vol-owner/$v"
 }
 
+# set_project <container> <value>: change the compose project a container claims to belong to.
+# Both files matter: `project` is what the shim returns for the capture's multi-field template, and
+# `labels` is what it returns for ANY {{...Config.Labels...}} format (the double returns the whole
+# labels file rather than indexing one key), which is what app_check_not_foreign asks for.
+set_project() {
+  printf '%s' "$2" >"$SHIM_STATE/containers/$1/project"
+  printf '%s' "$2" >"$SHIM_STATE/containers/$1/labels"
+}
+
 # ---- the toypark shape: rename, and nothing else ------------------------------------------
 t_disabled_restart_unit_keeps_the_rename_path() {
   mk_stack unless-stopped
@@ -406,6 +415,38 @@ t_the_migration_stamps_the_config_policy_before_the_new_agent_starts() {
   [[ -n $stamp && -n $stop && -n $install_line ]] || die_t "could not find the stamp ($stamp), the stop ($stop) or the install ($install_line)"
   ((stop < stamp && stamp < install_line)) \
     || die_t "the stamp (line $stamp) must sit between the stop (line $stop) and the install (line $install_line)"
+}
+
+# ---- a same-named container that is not ours ------------------------------------------------
+t_a_container_from_another_compose_project_is_refused() {
+  # The migration retires containers by name, so a hermes-agent belonging to something else must
+  # stop the run rather than be captured, renamed and replaced.
+  mk_hermes hermes-agent unless-stopped
+  set_project hermes-agent someone_elses_project
+  expect_fail app_check_not_foreign hermes-agent podman
+  has "$OUT" "someone_elses_project"
+  expect_ok app_check_not_foreign hermes-agent someone_elses_project
+}
+
+t_a_container_with_no_compose_label_is_warned_about_not_refused() {
+  mk_hermes hermes-agent unless-stopped
+  set_project hermes-agent ""
+  expect_ok app_check_not_foreign hermes-agent podman
+  has "$OUT" "no compose project label"
+}
+
+t_the_compose_project_really_is_called_podman() {
+  # Not a typo: the compose file lives in deploy/podman/, so podman-compose named the project after
+  # that directory. Anything that "corrects" this to hermes stops the migration from recognising
+  # the containers it is supposed to retire.
+  mk_hermes hermes-agent unless-stopped
+  eq "$(cat "$SHIM_STATE/containers/hermes-agent/project")" podman "the fixture's project label"
+  grep -q '^LEGACY_PROJECT=podman$' "$REPO/scripts/migrate-legacy.sh" \
+    || die_t "LEGACY_PROJECT is not 'podman'"
+  local code
+  code=$(grep -vE '^[[:space:]]*#|ql_(info|warn|die) ' "$REPO/scripts/migrate-legacy.sh")
+  grep -q 'app_check_not_foreign' <<<"$code" || die_t "the migration never checks the compose project label"
+  return 0
 }
 
 run() {

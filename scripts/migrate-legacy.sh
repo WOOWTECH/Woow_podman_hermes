@@ -94,6 +94,10 @@ LEGACY_VOLUMES=(
 # The compose network. Never created, never removed, never adopted by this repo's units.
 LEGACY_NETWORK=podman_default
 DATA_VOLUME=podman_hermes-data
+# The podman-compose project label the legacy containers must carry. It really is 'podman': the
+# compose file lives in deploy/podman/, and podman-compose names the project after that directory.
+# A same-named container from any other project is refused, not retired.
+LEGACY_PROJECT=podman
 MAIN_UNIT=hermes-agent.service
 
 mode=migrate legacy_dir=$HOME/Woow_podman_hermes suffix=$(date +%Y%m%d)
@@ -244,6 +248,7 @@ for c in "${LEGACY_CONTAINERS[@]}"; do
     hermes-agent.service | hermes-postgres.service | hermes-redis.service)
       ql_die "$c is already managed by Quadlet ($label); this host needs no migration" ;;
   esac
+  app_check_not_foreign "$c" "$LEGACY_PROJECT"
   running "$c" || ql_die "legacy container $c is not running; start the legacy stack first (the pg_dump, the volume exports and the snapshot are all taken hot)"
 done
 if quadlet_installed; then
