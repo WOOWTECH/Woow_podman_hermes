@@ -31,7 +31,7 @@ while (($#)); do
 done
 ql_require_rootless
 if [[ -z $target ]]; then
-  if [[ -f $ENV_FILE ]]; then ql_env_load; target=$(ql_env_get WOOW_HERMES_IMAGE_TARGET slim); else target=slim; fi
+  if [[ -f $ENV_FILE ]]; then ql_env_load "$ENV_FILE"; target=$(ql_env_get WOOW_HERMES_IMAGE_TARGET slim); else target=slim; fi
 fi
 ql_assert_match WOOW_HERMES_IMAGE_TARGET "$target" 'slim|full'
 
@@ -43,7 +43,12 @@ if podman image exists "$HERMES_IMAGE"; then
   podman tag "$HERMES_IMAGE" "$HERMES_IMAGE-prev" && ql_info "kept the previous image as $HERMES_IMAGE-prev"
 fi
 cpus=''
-[[ -f $ENV_FILE ]] && cpus=$(ql_env_get WOOW_HERMES_BUILD_CPUS '')
+# ql_env_get reads QL_ENV, which is only filled when the block above loaded the env file (it does
+# not when --target was passed explicitly), so load it here too rather than read a stale array.
+if [[ -f $ENV_FILE ]]; then
+  ql_env_load "$ENV_FILE"
+  cpus=$(ql_env_get WOOW_HERMES_BUILD_CPUS '')
+fi
 args=()
 [[ -z $cpus ]] || args+=(--cpuset-cpus "$cpus")
 ql_info "building $HERMES_IMAGE (target $target) from the pinned base; this takes 5-15 minutes"

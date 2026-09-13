@@ -75,6 +75,13 @@ lint_local() {
   # The database password reaches PostgreSQL as a file, never as an environment value.
   grep -qx 'Environment=POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password' quadlet/hermes-postgres.container \
     || fail "hermes-postgres.container no longer uses POSTGRES_PASSWORD_FILE"
+  # ql_env_load takes the file to load. Called bare it dies with a usage error - and only on a host
+  # that already has ~/.config/hermes/hermes.env, i.e. every host after the first install, which is
+  # why scripts/build-image.sh carried that call unnoticed until a migration rehearsal hit it.
+  local bare
+  bare=$(grep -rnE 'ql_env_load([[:space:]]*[;&|)]|[[:space:]]*$)' scripts/*.sh || true)
+  if [[ -n $bare ]]; then fail "a script calls ql_env_load with no argument at:"; where <<<"$bare"; fi
+
   # The mutation model is gone: no deploy.sh, and nothing may podman-exec its way into the image.
   if compgen -G 'deploy/*' >/dev/null; then fail "deploy/ is back (the compose deployment was removed)"; fi
   if grep -rqE 'podman (exec|cp) [^|]*/opt/hermes' scripts 2>/dev/null; then
