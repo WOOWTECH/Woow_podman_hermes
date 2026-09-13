@@ -177,6 +177,54 @@ restored on all three: podman 4.9.3 cannot set a policy after create, so `ql_rec
 to put it back into the replayed `podman create`, and a container that came back as `no` would not
 be the container that was removed.
 
+## Cutover: the adoption is proved, the policy stamp holds, and 24/24 smoke checks pass
+
+```
+adopted podman_hermes-data in place:   mountpoint|CreatedAt|inode unchanged (.../podman_hermes-data/_data|2026-09-14 03:16:17.853724505 +0800 CST|1049243)
+adopted podman_redis-data in place:    mountpoint|CreatedAt|inode unchanged (.../podman_redis-data/_data|2026-09-14 03:19:23.384050653 +0800 CST|1090676)
+adopted podman_postgres-data in place: mountpoint|CreatedAt|inode unchanged (.../podman_postgres-data/_data|2026-09-14 03:19:20.891402384 +0800 CST|1048805)
+...
+PASS A9 config.yaml and .env belong to hermes, the policy stamp is set
+PASS A9 the TUI was re-synced for v2026.8.31-woow1
+PASS A9 the pinned skills seed is in place
+24 passed, 0 failed, 2 warnings
+before: gateway_health=200 dashboard=302 db_tables=0 db_databases=2 redis_keys=0 data_files=1833
+after:  gateway_health=200 dashboard=302 db_tables=0 db_databases=2 redis_keys=0 data_files=1831
+measured downtime: 51s (from 'podman stop hermes-agent' to the Quadlet stack answering)
+migration complete. The legacy containers were captured into .../legacy-container and removed.
+WARNING: do NOT remove the network podman_default during the soak: despite its generic name it is
+this stack's compose network and the rollback needs it
+
+hermes-redis|Up 45 seconds (healthy)|docker.io/library/redis@sha256:ff02b58f...|hermes-redis.service
+hermes-postgresql|Up 45 seconds (healthy)|docker.io/library/postgres@sha256:9b1d34ad...|hermes-postgres.service
+hermes-agent|Up 41 seconds (healthy)|localhost/woow-hermes-agent:v2026.8.31-woow1|hermes-agent.service
+hermes-agent podman_hermes-data->/opt/data
+hermes-postgresql podman_postgres-data->/var/lib/postgresql/data
+hermes-redis podman_redis-data->/data
+networks: hermes, podman_default        (the compose one survives, as intended)
+policy stamp: -rw-r--r-- 1 hermes hermes 0 /opt/data/.woow-policy-v1
+              policy not re-applied (correct)
+lock is free                            (app_unlocked; see bug 1 below)
+```
+
+`db_tables`, `db_databases` and `redis_keys` are identical across the cutover — the adopted cluster
+and cache are the ones that were there. `data_files` under `/opt/data` is expected to move: the new
+image provisions config and skills on first start, and the script says so rather than warning about
+its own expected behaviour.
+
+**`--rollback` was run three times over the course of the rehearsal, each time on the capture path,
+and each time the 8 MiB blob came back byte-identical.** The third (after the final forward
+migration was already recorded `done`) was not needed; the first two were, because the cutover
+failed on bugs 3 and 4 below and the script rolled back to a serving legacy stack each time. That is
+the rollback doing its job under conditions nobody arranged.
+
+Re-running after success:
+
+```
+already migrated on 2026-09-14T03:55:59+08:00: the Quadlet units are installed and hermes-agent is
+running. Nothing to do
+```
+
 ## `podman diff` is not the measurement
 
 The brief offered `podman diff` or the library's own measurement. On the live openclaw
