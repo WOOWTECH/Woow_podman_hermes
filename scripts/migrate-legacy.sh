@@ -209,8 +209,8 @@ rollback() {
   # renamed back, or recreated from the capture the cutover took - whichever the host needed
   app_legacy_restore "$sfx" "$bk" "${LEGACY_CONTAINERS[@]}"
   # The database and the cache first: the agent is the one with the published ports.
-  app_unlocked podman start "$DB" "$CACHE" >/dev/null || ql_die "could not start the legacy database and cache"
-  app_unlocked podman start "$AGENT" >/dev/null || ql_die "could not start the legacy agent"
+  podman start "$DB" "$CACHE" >/dev/null || ql_die "could not start the legacy database and cache"
+  podman start "$AGENT" >/dev/null || ql_die "could not start the legacy agent"
   port=$(state_get LEGACY_PORT_GATEWAY)
   ql_wait_http "http://127.0.0.1:${port:-18642}/health" '200' 300 \
     || ql_die "the legacy gateway did not answer on 127.0.0.1:${port:-18642}/health after the rollback"
@@ -460,7 +460,7 @@ unset LEGACY_DB_PASSWORD
 while IFS= read -r img; do
   [[ -n $img ]] || continue
   podman image exists "$img" && continue
-  app_unlocked podman pull -q "$img" >/dev/null \
+  podman pull -q "$img" >/dev/null \
     || ql_die "could not pull $img; nothing was changed and the legacy stack is untouched"
 done < <(sed -n 's/^Image=//p' "$REPO/quadlet/hermes-postgres.container" "$REPO/quadlet/hermes-redis.container")
 
@@ -470,7 +470,7 @@ if podman image exists "$HERMES_IMAGE"; then
   ql_info "$HERMES_IMAGE is already present"
 else
   ql_info "building $HERMES_IMAGE before any downtime"
-  app_unlocked "$REPO/scripts/build-image.sh" || ql_die "the image build failed; nothing was changed and the legacy stack is untouched"
+  "$REPO/scripts/build-image.sh" || ql_die "the image build failed; nothing was changed and the legacy stack is untouched"
 fi
 
 # =============================================================================================
@@ -550,7 +550,7 @@ fi
 # =============================================================================================
 ql_info "step 5/5: scripts/install.sh"
 failed=0
-app_unlocked "$REPO/scripts/install.sh" --accept-defaults --no-build --no-smoke "${no_llm[@]}" || failed=1
+"$REPO/scripts/install.sh" --accept-defaults --no-build --no-smoke "${no_llm[@]}" || failed=1
 DOWN_TO=$(now_s)
 if ((!failed)); then
   # The proof: same mountpoint, same inode, same CreatedAt. A .volume rendered with the default
@@ -580,7 +580,7 @@ if ((failed == 0)) && ((align_db)); then
     ql_warn "--align-db-password: ALTER ROLE failed; the cluster keeps the legacy password"
   fi
 fi
-((failed)) || app_unlocked "$REPO/tests/smoke.sh" || failed=1
+((failed)) || "$REPO/tests/smoke.sh" || failed=1
 if ((failed)); then
   if ((auto_rollback)); then
     ql_warn "the cutover failed; rolling back automatically (--no-auto-rollback keeps it for inspection)"
