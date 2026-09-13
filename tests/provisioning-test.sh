@@ -62,16 +62,43 @@ else
   fail "the second run was not idempotent (rc=$RC): $OUT"
 fi
 
-# 3. A model_routes section with nothing to anchor on is a state the script does not understand,
-#    and guessing an insertion point in someone's config is worse than stopping.
+# 3. A model_routes section with no configured route to anchor on: also nothing to add, also not a
+#    failure. This script only ADDS routes to an existing block.
 cat >"$T/anchorless.yaml" <<'EOF'
 gateway:
   providers:
     openrouter:
       model_routes: {}
 EOF
+before=$(sha256sum <"$T/anchorless.yaml")
 run "$T/anchorless.yaml"
-if ((RC == 1)); then pass "model_routes with no api_key: anchor still fails"; else fail "an anchorless model_routes exited $RC, want 1"; fi
+if ((RC == 0)); then pass "model_routes with no route to anchor on exits 0"; else fail "an anchorless model_routes exited $RC, want 0"; fi
+if [[ $OUT == *"no configured route to insert after"* ]]; then pass "and says which of the two cases it is"; else fail "the message does not distinguish the cases: $OUT"; fi
+if [[ $(sha256sum <"$T/anchorless.yaml") == "$before" ]]; then pass "and changes nothing"; else fail "it rewrote a config it had nothing to add to"; fi
+
+# 3b. The one that actually bit on toypark1234: the generated config.yaml documents this feature in
+#     a comment block that contains both "model_routes:" and "# api_key:". A scan that does not skip
+#     comments decides there is a section, finds no anchor, and reports a corrupt config on a
+#     perfectly ordinary gateway.
+cat >"$T/commented.yaml" <<'EOF'
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       extra:
+#         model_routes:
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             # api_key: "sk-..."   # optional - per-route UPSTREAM provider key
+approvals:
+  mode: "off"
+EOF
+before=$(sha256sum <"$T/commented.yaml")
+run "$T/commented.yaml"
+if ((RC == 0)); then pass "model_routes mentioned only in comments exits 0"; else fail "a commented model_routes exited $RC, want 0"; fi
+if [[ $OUT == *"No model_routes section yet"* ]]; then pass "and is not fooled into thinking a section exists"; else fail "comments were treated as a section: $OUT"; fi
+if [[ $(sha256sum <"$T/commented.yaml") == "$before" ]]; then pass "and changes nothing"; else fail "it rewrote a config made of comments"; fi
 
 # 4. woow-provision must keep running it as its last command, so this exit code keeps mattering.
 # shellcheck disable=SC2016 # the literal call site in woow-provision, not an expansion
