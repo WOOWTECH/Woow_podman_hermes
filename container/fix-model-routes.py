@@ -65,20 +65,41 @@ if added == 0:
 
 insertion = '\n'.join(route_lines)
 
-# Find insertion point: after last existing route's api_key line in model_routes
+# Find the insertion point: after the last api_key: line inside model_routes.
+#
+# Comments are skipped. The generated config.yaml documents this very feature in a long comment
+# block that contains both "model_routes:" and "# api_key:", so a naive substring scan decides
+# there is a section when there is none - which is how a gateway with no provider configured used
+# to end up reported as a corrupt config.
 lines = content.split('\n')
 insert_idx = None
 in_model_routes = False
 
 for i, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith('#'):
+        continue
     if 'model_routes:' in line:
         in_model_routes = True
-    if in_model_routes and line.strip().startswith('api_key:'):
+    if in_model_routes and stripped.startswith('api_key:'):
         insert_idx = i
 
 if insert_idx is None:
-    print("ERROR: No model_routes section found in config")
-    sys.exit(1)
+    # Nothing to do, not a failure. This script only ADDS routes to an existing routes block; with
+    # no block, or a block with no configured route to anchor on, there is nowhere - and nothing -
+    # to add. That is the ordinary state of a gateway that has not been given a provider yet, and
+    # of every config.yaml adopted from the compose deployment.
+    #
+    # It matters because this script is the last command of woow-provision, which runs under
+    # `set -euo pipefail`: a non-zero exit here fails hermes-provision.service and, through it,
+    # scripts/install.sh and scripts/migrate-legacy.sh. The compose-era deploy.sh said the same
+    # thing more bluntly, with `|| echo "(model routes: no model_routes section yet)"`.
+    if not in_model_routes:
+        print("No model_routes section yet: nothing to add "
+              "(the gateway writes one once a provider is configured)")
+    else:
+        print("model_routes has no configured route to insert after: nothing to add")
+    sys.exit(0)
 
 lines.insert(insert_idx + 1, insertion)
 

@@ -162,34 +162,101 @@ scripts/uninstall.sh --purge --purge-images      # 再移除本機建置的 agen
 
 ## 從 podman-compose 部署遷移
 
-compose 使用的是通用 volume 名稱（`podman_hermes-data` 等），所以這是**複製**遷移，不是原地沿用。
+`scripts/migrate-legacy.sh` 會完整執行整個流程，並提供回復。
 
-1. **先建置映像：** `scripts/build-image.sh`。基底會從某個 `main` 版本改為釘版的 `v2026.8.31` 發行版。
-2. **停止舊堆疊並複製 volume：**
-   ```bash
-   podman stop hermes-agent hermes-postgresql hermes-redis
-   podman volume export podman_hermes-data -o hermes-data.tar          # 約 1.2 GB
-   podman volume create hermes-data && podman volume import hermes-data hermes-data.tar
-   ```
-   `podman_postgres-data` → `hermes-postgres-data`、`podman_redis-data` → `hermes-redis-data` 同理。
-   舊 volume 保持不動，就是你的回復路徑。
-3. **標記設定政策已套用過**（舊的 `deploy.sh` 已做過），避免佈建再次對你後來改過的設定跑 `sed`：
-   ```bash
-   mp=$(podman volume inspect --format '{{.Mountpoint}}' hermes-data)
-   podman unshare touch "$mp/.woow-policy-v1" && podman unshare chown 1000:1000 "$mp/.woow-policy-v1"
-   ```
-4. **從舊的 `.env` 匯入 secrets**，一律用管線、不要 echo，讓 API 客戶端與 webhook 發送端繼續可用：
-   ```bash
-   grep '^API_SERVER_KEY=' .env | cut -d= -f2- | tr -d '\n' | podman secret create hermes-api-server-key -
-   ```
-   `WEBHOOK_SECRET` → `hermes-webhook-secret`、`DASHBOARD_PASSWORD` → `hermes-dashboard-password`、
-   `POSTGRES_PASSWORD` → `hermes-postgres-password`（必須與已初始化的叢集相符）同理。
-   `MINIMAX_API_KEY`、`OPENROUTER_API_KEY`、`GITHUB_TOKEN` 與 `HERMES_DASHBOARD_PUBLIC_URL` 則搬到
-   `~/.config/hermes/hermes.env`。
-5. **把舊容器改名**（`podman rename hermes-agent hermes-agent-legacy-$(date +%Y%m%d)`，另外兩個同理），
-   避免被 Quadlet 取代，然後執行 `scripts/install.sh` 與 `tests/smoke.sh`。
-6. **公告行為變更：** 三個埠現在預設只在 127.0.0.1（除非設 `WOOW_HERMES_BIND=all`），dashboard 密碼是你
-   匯入的那一組（不再是 `admin`）。
+```bash
+scripts/migrate-legacy.sh --dry-run        # 全部檢查，並說明本主機需要哪一種回復形式
+scripts/migrate-legacy.sh --prepare-only   # env 檔、secrets、映像建置、熱備份
+scripts/migrate-legacy.sh --yes            # 正式切換
+scripts/migrate-legacy.sh --status         # 查看記錄
+```
+
+**三個 volume 都是原地沿用。** `quadlet/*.volume` 的 `VolumeName=` 由 `WOOW_HERMES_DATA_VOLUME`、
+`WOOW_HERMES_POSTGRES_VOLUME`、`WOOW_HERMES_REDIS_VOLUME` 產生，遷移時會把它們設為 compose 時期的名稱
+`podman_hermes-data`、`podman_postgres-data`、`podman_redis-data`。1.3 GB 的 agent 狀態完全不複製，
+安裝後還會**驗證**沿用：比對每個 volume 的 mountpoint、`CreatedAt` 與 inode 是否與切換前一致。若單元仍用
+預設名稱，這裡會出現全新的空 `hermes-data`，而這個比對正是用來抓出它。全新安裝則維持預設值。
+
+它會拒絕而不是猜測的情況：容器不存在、未執行或已由 Quadlet 管理；volume 掛在本倉庫預期以外的位置；
+另有執行中的容器在寫同一個 volume；agent 沒有發佈全部三個埠；埠發佈在多個位址；目標埠被非舊堆疊的程式占用；
+PostgreSQL 主版本與釘版不符（沿用的叢集無法原地升主版本）；資料庫不回應 `pg_isready`；
+`HERMES_DASHBOARD_PUBLIC_URL` 為空；單元已安裝；以及 `hermes.network` 被改成 compose 專案名稱（見下）。
+
+所有耗時的工作都在**停機之前**完成：env 檔、secrets、映像建置（5–15 分鐘外加基底下載）、釘版的
+`postgres` 與 `redis` 下載、`hermes` 資料庫的 `pg_dump -Fc` 與 `pg_dumpall --roles-only`、
+三個 volume 的熱匯出、`podman inspect`、compose 檔，以及 capture 路徑下的回復副本。`--prepare-only`
+就停在這裡。之後的切換才停止堆疊、做冷匯出、退役容器、標記設定政策（見下）、安裝、驗證沿用、
+執行 `tests/smoke.sh`、與切換前快照比對，並印出**實測停機時間**。
+
+### 有三件事會刻意改變
+
+* **映像。** compose 堆疊跑的是 `docker.io/nousresearch/hermes-agent:latest`，然後用 `podman exec`
+  修改執行中的容器：`deploy/podman/deploy.sh` 以 apt 安裝 tmux、用 uv 把 `ddgs` 裝進 agent venv、
+  下載 OfficeCLI、在 `/usr/local/bin` 建立 symlink、`rm -rf` 掉 `/opt/hermes` 下的技能包，並修補其中
+  兩個 Python 檔。Quadlet 堆疊改跑 `localhost/woow-hermes-agent:<tag>`，由釘 digest 的基底建置，
+  上述全部烘進映像。腳本會回報兩邊的映像，並在確認提示中指出這項變更。舊容器裡的東西不會被讀回來 —
+  那 42 MB 的可寫層是由建置重現，不是複製。
+* **secrets 是沿用而非重新產生：** API key、webhook secret 與 dashboard 密碼都取自舊容器的環境，
+  讓 API 客戶端、webhook 發送端與已儲存的登入繼續可用。`--rotate-secrets` 會改為產生新值並讓三者全部失效。
+  資料庫密碼同樣取自舊容器，因為 PostgreSQL 只在 initdb 時讀 `POSTGRES_PASSWORD_FILE`：在沿用的叢集上，
+  記錄的 secret 必須就是叢集既有的密碼。`--align-db-password` 會額外執行 `ALTER ROLE`。
+* **設定政策是「標記」而非重新套用。** 除非 `/opt/data/.woow-policy-v1` 存在，
+  否則 `hermes-provision.service` 會套用 WOOWTECH 政策（對 `config.yaml` 做 `sed`，並啟用工具與外掛）。
+  `deploy.sh` 早已在這個 volume 上跑過該政策，而之後可能有人在 dashboard 改過設定，因此遷移會在 volume
+  閒置時寫入標記。`--reapply-config-policy` 可略過標記，讓佈建再跑一次。
+
+埠沿用 compose 堆疊原本發佈的設定，包含 `0.0.0.0`。事後在 `~/.config/hermes/hermes.env` 設
+`WOOW_HERMES_BIND=127.0.0.1` 並重新執行 `scripts/install.sh` 即可收斂。
+
+### compose 專案叫做 `podman`，它的網路也是
+
+compose 檔位於 `deploy/podman/`，所以 podman-compose 推導出的專案名稱是 **`podman`**：volume 是
+`podman_*`，網路是 **`podman_default`**。這個名稱看起來像 podman 自己的預設網路、不屬於任何應用 —
+**但在 `woowtechopenclaw` 上它就是 hermes 堆疊的網路。** 把它當成殘留物刪掉會弄壞舊堆疊以及所有依賴它的回復。
+
+volume 之所以沿用，是因為它們存放資料；網路不存資料，所以 `quadlet/hermes.network` 另建一個 `hermes`，
+並保持 `podman_default` 不動。這是刻意的：沿用該名稱會讓 `podman_default` 進入本應用的 manifest，
+接著 `scripts/uninstall.sh --purge` 就會刪掉它。若 `quadlet/hermes.network` 被改成該名稱，遷移會直接拒絕執行；
+`tests/dryrun.sh` 會檢查沒有任何產生的單元帶有它；切換完成時也會警告觀察期內不要移除它。
+
+### 回復形式（STANDARD 7a）
+
+把舊容器改名並保持停止，只在沒有東西再啟動它們時才安全。使用者單元 `podman-restart.service` 會在開機時執行
+`podman start --all --filter restart-policy=always`。`ql_rollback_strategy` 會問本主機：該單元是否啟用、
+是否有舊容器的策略正好是 `always`：
+
+| 回答 | 切換時的動作 | `--rollback` 的動作 |
+|---|---|---|
+| `rename` | `podman rename <name> <name>-legacy-<suffix>`，保持停止 | 改名回去並啟動 |
+| `capture` | `ql_capture_container` 寫入備份，然後執行單純的 `podman rm`（絕不用 `rm -v`） | `ql_recreate_container` 以原本的重啟策略重建並啟動 |
+
+在 `woowtechopenclaw` 上三個 hermes 容器都是 `unless-stopped`，不符合該過濾條件，因此目前走 rename 路徑。
+capture 路徑在這裡仍然重要，而且正是需要 **`--commit`** 的那一個：`hermes-agent` 的可寫層是
+**42 672 686 bytes、844 個檔案** — 恰好就是 `deploy.sh` 造成的變更 — 若 capture 後直接移除而不先 commit，
+回復得到的會是缺少全部這些變更的容器。`scripts/common.sh` 因此把 `hermes-agent` 列在
+`LEGACY_COMMIT_ALWAYS`；任何可寫層超過 `LEGACY_COMMIT_RW_BYTES`（1 MiB）的容器也會僅憑量測結果被 commit —
+`hermes-postgresql`（1 087 119 bytes）就是這樣處理的。大小來自 `podman inspect --size`（`.SizeRw`）；
+**`podman diff` 對線上的 `hermes-agent` 印出空物件，不能拿來替代。** `tests/rollback-model.sh` 固定了以上全部行為。
+
+### 回復
+
+```bash
+scripts/migrate-legacy.sh --rollback
+```
+
+它會停止並移除 Quadlet 單元（**三個 volume、`podman_default` 與 secrets 都保留**），依切換當時採用的形式把
+舊容器帶回來，先啟動資料庫與快取、再啟動 agent，並等待 `/health`。過程中不涉及資料還原：volume 是原地沿用、
+從未被覆寫。備份目錄中的 `pg_dump` 與冷匯出只在資料庫損壞時才需要 —
+在容器內以 `pg_restore -c -d hermes` 還原。
+
+請注意舊堆疊**沒有任何 systemd 單元**，策略是 `unless-stopped`，不被 `podman-restart.service` 匹配：
+重開機後它不會自己回來。這在遷移之前就已經如此 — Quadlet 正是這件事的解法。
+
+### 觀察期結束後
+
+移除 `hermes-*-legacy-<suffix>`（rename 路徑），或備份中的 `legacy-container/` 目錄與 commit 產生的
+`localhost/woow-legacy/hermes-agent:*` 映像（capture 路徑）；封存備份目錄；最後才考慮 `podman_default`。
+在那之前請保留 compose checkout。
 
 ## 安全性現況
 
@@ -209,13 +276,19 @@ quadlet/                           帶 @@VAR@@ 標記的單元；quadlet/render-
 systemd/hermes-provision.service   gateway 健康後執行 woow-provision 的 oneshot
 config/hermes.env.example          ~/.config/hermes/hermes.env 的範本
 config/golden-config.yaml          參考設定（不會自動套用）
-scripts/                           build-image、install、upgrade、uninstall、backup、restore
+scripts/                           build-image、install、upgrade、uninstall、backup、restore、
+                                   migrate-legacy
+scripts/legacy-common.sh           rename 與 capture 回復輔助函式、可寫層判斷、volume 沿用驗證
 scripts/lib/                       內嵌的 quadlet-lib（請勿修改；CI 會檢查其雜湊）
 tests/dryrun.sh                    產生單元 + Quadlet 4.9.3 dry-run + systemd-analyze verify（CI 與本機）
 tests/patch-anchors.sh             對照釘版上游 tag 檢查修補錨點
 tests/smoke.sh                     主機上的安裝後檢查
 tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認不再有 live mutation（CI）
+tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-routes.py 的結束碼（CI）
+tests/rollback-model.sh            以 tests/shims 驗證回復模型、可寫層判斷與沿用驗證（CI）
+tests/shims/                       podman 與 systemctl 測試替身；不會建立任何容器
 docs/odoo-posting.md               原本放在 deploy/podman/SKILL.md 的 Odoo cron 筆記
+docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 ```
 
 ## 疑難排解

@@ -29,6 +29,22 @@ check "the database password never reaches the environment" bash -c \
 check "the provisioning unit is pulled in by the agent" bash -c \
   "grep -qx 'WantedBy=hermes-agent.service' '$WORK/example/out/hermes-provision.service'"
 
+# The volume names are rendered, so an existing compose deployment can be adopted in place.
+check "example renders the default data volume name" has_line example hermes-data.volume 'VolumeName=hermes-data'
+check "example renders the default database volume name" has_line example hermes-postgres-data.volume 'VolumeName=hermes-postgres-data'
+check "example renders the default cache volume name" has_line example hermes-redis-data.volume 'VolumeName=hermes-redis-data'
+check "the legacy-adoption fixture renders the compose-era data volume" \
+  has_line fixture-legacy-adopt hermes-data.volume 'VolumeName=podman_hermes-data'
+check "the legacy-adoption fixture renders the compose-era database volume" \
+  has_line fixture-legacy-adopt hermes-postgres-data.volume 'VolumeName=podman_postgres-data'
+check "the legacy-adoption fixture renders the compose-era cache volume" \
+  has_line fixture-legacy-adopt hermes-redis-data.volume 'VolumeName=podman_redis-data'
+# The network is never the compose one: adopting podman_default would make uninstall --purge delete
+# the legacy stack's network, and every "remove the stray podman_default" cleanup a rollback-killer.
+check "the network keeps its own name, not the compose project's" has_line example hermes.network 'NetworkName=hermes'
+check "no rendered unit adopts the compose network name" \
+  bash -c "! grep -rqx 'NetworkName=podman_default' '$WORK'/*/out"
+
 # Invalid knobs must stop the render before any file is written.
 reject() { # reject <description> <KEY> <bad value>
   local env=$WORK/bad-$2.env
@@ -45,3 +61,4 @@ reject() { # reject <description> <KEY> <bad value>
 reject "a memory limit with shell metacharacters" WOOW_HERMES_MEMORY '6g --privileged'
 reject "a port out of range" WOOW_HERMES_PORT_GATEWAY 70000
 reject "a port used by two knobs" WOOW_HERMES_PORT_WEBHOOK 19119
+reject "a volume name with shell metacharacters" WOOW_HERMES_DATA_VOLUME 'hermes-data;rm -rf /'
