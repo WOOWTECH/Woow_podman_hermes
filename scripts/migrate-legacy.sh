@@ -138,8 +138,7 @@ if [[ $mode == status ]]; then
 fi
 
 ql_preflight "$PODMAN_MIN"
-app_lock
-
+ql_lock "$APP"
 unit_exists() { [[ -n $(systemctl --user show -p FragmentPath --value "$1" 2>/dev/null) ]]; }
 quadlet_installed() { [[ -s $APP_STATE_DIR/manifest ]] && unit_exists "$MAIN_UNIT"; }
 running() { [[ $(podman inspect --format '{{.State.Status}}' "$1" 2>/dev/null) == running ]]; }
@@ -380,7 +379,7 @@ else ql_warn "no legacy checkout at $legacy_dir; its .env and compose file will 
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/$APP-migrate.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+ql_cleanup work rm -rf "$WORK"
 
 if [[ $mode == dry-run ]]; then
   # Render and validate against a scratch env file rather than calling install.sh --dry-run: that
