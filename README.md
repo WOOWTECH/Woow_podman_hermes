@@ -318,6 +318,7 @@ tests/dryrun.sh                    render + Quadlet 4.9.3 dry-run + systemd-anal
 tests/patch-anchors.sh             the patch anchors against the pinned upstream tag
 tests/smoke.sh                     post-install checks on a host
 tests/lint-repo.sh                 credential scan, image pin parity, no live-mutation (CI)
+tests/provisioning-test.sh         fix-model-routes.py exit codes against real config shapes (CI)
 tests/rollback-model.sh            the rollback model, the writable-layer decision and the
                                    adoption proof, against tests/shims (CI)
 tests/shims/                       podman and systemctl doubles; no container is ever created

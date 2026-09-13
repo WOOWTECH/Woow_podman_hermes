@@ -31,6 +31,9 @@ jobs:
       - name: python syntax of the image patches
         run: python3 -m py_compile container/patches/*.py container/fix-model-routes.py
 
+      - name: In-image provisioning behaviour (fix-model-routes exit codes)
+        run: tests/provisioning-test.sh
+
       - name: hadolint on the Containerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:

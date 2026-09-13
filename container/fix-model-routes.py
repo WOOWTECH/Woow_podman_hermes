@@ -77,7 +77,21 @@ for i, line in enumerate(lines):
         insert_idx = i
 
 if insert_idx is None:
-    print("ERROR: No model_routes section found in config")
+    # Two different situations, and only one of them is a failure.
+    #
+    # No `model_routes:` at all is the ordinary state of a gateway that has not been given a
+    # provider yet - and of every config.yaml adopted from the compose deployment. There is
+    # nothing to add a route into, so there is nothing to do. The compose-era deploy.sh said the
+    # same thing with `|| echo "(model routes: no model_routes section yet)"`; in the image this
+    # script is the last command of woow-provision, so a non-zero exit here fails
+    # hermes-provision.service and, through it, scripts/install.sh.
+    if not any('model_routes:' in line for line in lines):
+        print("No model_routes section yet: nothing to add "
+              "(the gateway writes one once a provider is configured)")
+        sys.exit(0)
+    # A model_routes section that carries no api_key: line is not a state this script understands,
+    # and guessing an insertion point in someone's config is worse than stopping.
+    print("ERROR: model_routes exists but has no api_key: line to insert after")
     sys.exit(1)
 
 lines.insert(insert_idx + 1, insertion)

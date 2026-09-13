@@ -284,6 +284,7 @@ tests/dryrun.sh                    產生單元 + Quadlet 4.9.3 dry-run + system
 tests/patch-anchors.sh             對照釘版上游 tag 檢查修補錨點
 tests/smoke.sh                     主機上的安裝後檢查
 tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認不再有 live mutation（CI）
+tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-routes.py 的結束碼（CI）
 tests/rollback-model.sh            以 tests/shims 驗證回復模型、可寫層判斷與沿用驗證（CI）
 tests/shims/                       podman 與 systemctl 測試替身；不會建立任何容器
 docs/odoo-posting.md               原本放在 deploy/podman/SKILL.md 的 Odoo cron 筆記
