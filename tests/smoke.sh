@@ -86,13 +86,27 @@ api_key=$(app_secret_read hermes-api-server-key || true)
 (umask 077 && printf 'user = "admin:%s"\n' "$dash_pw" >"$TMP/dashrc")
 (umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$api_key" >"$TMP/apirc")
 
-# A5 the dashboard needs the generated password; the old admin/admin default does not work
-anon=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "http://$host:$dashboard/" || true)
-auth=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -K "$TMP/dashrc" "http://$host:$dashboard/" || true)
-weak=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -u admin:admin "http://$host:$dashboard/" || true)
-if [[ $anon == 401 ]]; then pass "A5 the dashboard without credentials returns 401"; else fail "A5 the dashboard without credentials returned $anon"; fi
-if [[ $auth == 200 ]]; then pass "A5 the dashboard accepts the generated password"; else fail "A5 the dashboard returned $auth with the generated password"; fi
-if [[ $weak == 401 ]]; then pass "A5 admin/admin is rejected"; else fail "A5 admin/admin returned $weak"; fi
+# A5 nothing of the dashboard is served to an unauthenticated caller.
+#
+# This build does NOT use HTTP basic auth on the dashboard: an HTML route redirects to a login page
+# (302 -> /login?next=..., and that page is necessarily served without credentials), and an API route
+# answers 401 - to a caller with no credentials, with the generated password, and with admin/admin
+# alike. So `curl -u admin:<generated>` proves nothing here, and the old A5, which asserted 401/200/401
+# with basic auth on `/`, could never pass. Verified against a live stack on toypark1234:
+#   /            no-creds 302 -> /login (200)      /api/config  no-creds 401, right 401, wrong 401
+# What can be checked, and is what matters, is that the gate exists and the weak default opens nothing.
+api_code() { curl -s -o /dev/null -w '%{http_code}' -m 15 "$@" || true; }
+anon_api=$(api_code "http://$host:$dashboard/api/config")
+weak_api=$(api_code -u admin:admin "http://$host:$dashboard/api/config")
+anon_html=$(api_code "http://$host:$dashboard/")
+if [[ $anon_api == 401 || $anon_api == 403 ]]; then pass "A5 the dashboard API without credentials returns $anon_api"; else fail "A5 the dashboard API without credentials returned $anon_api"; fi
+if [[ $weak_api == 401 || $weak_api == 403 ]]; then pass "A5 admin/admin is rejected by the dashboard API"; else fail "A5 admin/admin returned $weak_api on the dashboard API"; fi
+if [[ $anon_html == 200 ]]; then
+  fail "A5 the dashboard serves $anon_html at / without credentials"
+else
+  pass "A5 the dashboard does not serve / without credentials (HTTP $anon_html)"
+fi
+warn "A5 this build gates the dashboard with a login form and 401s, not HTTP basic auth, so the hermes-dashboard-password secret is not verified end to end here; check it by logging in once"
 
 # A6 the gateway API needs the generated key
 anon=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "http://$host:$gateway/v1/models" || true)
