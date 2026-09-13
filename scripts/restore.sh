@@ -28,8 +28,7 @@ done
 [[ -n $archive && $confirm == "$APP" ]] || ql_die "usage: scripts/restore.sh --archive DIR_OR_TAR --confirm-restore $APP"
 archive=$(realpath -- "$archive")
 ql_require_rootless
-app_lock
-
+ql_lock "$APP"
 dump=''
 if [[ -d $archive ]]; then
   (cd "$archive" && [[ ! -f SHA256SUMS ]] || sha256sum -c --quiet SHA256SUMS) || ql_die "checksum mismatch in $archive"

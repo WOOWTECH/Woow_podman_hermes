@@ -32,8 +32,7 @@ while (($#)); do
   shift
 done
 ql_require_rootless
-app_lock
-
+ql_lock "$APP"
 if ((purge)); then
   app_confirm "$APP" "$yes" "--purge deletes the Hermes state (sessions, skills, memories), the database and the settings"
   if [[ ${QL_DRY_RUN:-0} != 1 ]]; then

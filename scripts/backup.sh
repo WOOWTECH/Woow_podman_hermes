@@ -31,7 +31,7 @@ while (($#)); do
   shift
 done
 ql_require_rootless
-app_lock
+ql_lock "$APP"
 podman volume exists hermes-data || ql_die "volume hermes-data does not exist"
 
 dest=$(app_new_backup_dir backup)
@@ -39,7 +39,8 @@ was_running=$(systemctl --user is-active hermes-agent.service 2>/dev/null || tru
 if ((hot == 0)) && [[ $was_running == active ]]; then
   systemctl --user stop hermes-agent.service
   start_again() { systemctl --user start hermes-agent.service || ql_warn "could not start hermes-agent.service again"; }
-  trap start_again EXIT
+  # a hook, not `trap ... EXIT`, which would replace the handler ql_lock armed
+  ql_cleanup restart start_again
 else
   ((hot == 0)) || ql_warn "--hot: the SQLite databases may be mid-write in this copy"
 fi
@@ -53,7 +54,7 @@ else
 fi
 printf '%s\n' "$HERMES_IMAGE_TAG" >"$dest/IMAGE_TAG"
 if ((hot == 0)) && [[ $was_running == active ]]; then
-  trap - EXIT
+  ql_cleanup_clear restart
   start_again
   app_wait_healthy hermes-agent 420 hermes-agent.service
 fi
