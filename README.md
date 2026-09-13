@@ -323,6 +323,7 @@ tests/rollback-model.sh            the rollback model, the writable-layer decisi
                                    adoption proof, against tests/shims (CI)
 tests/shims/                       podman and systemctl doubles; no container is ever created
 docs/odoo-posting.md               the Odoo cron notes that used to live in deploy/podman/SKILL.md
+docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of the migration
 ```
 
 ## Troubleshooting

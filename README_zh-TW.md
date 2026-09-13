@@ -288,6 +288,7 @@ tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-route
 tests/rollback-model.sh            以 tests/shims 驗證回復模型、可寫層判斷與沿用驗證（CI）
 tests/shims/                       podman 與 systemctl 測試替身；不會建立任何容器
 docs/odoo-posting.md               原本放在 deploy/podman/SKILL.md 的 Odoo cron 筆記
+docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 ```
 
 ## 疑難排解
