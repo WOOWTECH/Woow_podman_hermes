@@ -197,7 +197,7 @@ SizeRw=37670
 on a host where `podman diff` returns nothing for this image, that check passes vacuously. Left
 as-is here and flagged rather than changed: it is a smoke-test question, not a migration one.
 
-## Three pre-existing bugs the rehearsal found
+## Four pre-existing bugs the rehearsal found
 
 1. **`ql_lock`'s file descriptor leaks into the containers the scripts start.** It is opened with
    `exec {fd}>lock`, which bash does not mark close-on-exec, so conmon and rootlessport inherit it
@@ -238,3 +238,24 @@ as-is here and flagged rather than changed: it is a smoke-test question, not a m
 
    Finding the second bug only because the first was fixed is the argument for running the rehearsal
    to the end rather than stopping at "the containers came up".
+
+4. **`tests/smoke.sh` A5 tested a dashboard auth surface this build does not have.** It asserted
+   HTTP basic auth on `GET /` — 401 without credentials, 200 with the generated password, 401 for
+   `admin/admin`. Measured against the live stack:
+
+   ```
+   /            no creds -> 302 /login?next=%2F, and that login page is 200
+   /chat /config /dashboard   the same
+   /api/config   no creds 401, correct password 401, admin/admin 401
+   /api/sessions, /api/memory, /api/v1/status   the same 401
+   ```
+
+   The dashboard **is** gated — nothing is served to an unauthenticated caller — but through a login
+   form plus 401s, not basic auth, so `curl -u admin:<generated>` proves nothing about the secret
+   and all three assertions failed. A5 now checks what is real and load-bearing (the API answers 401
+   without credentials, `admin/admin` opens nothing, `/` does not serve content unauthenticated) and
+   *warns* that the secret is not verified end to end rather than implying that it is.
+
+   No security posture was changed: `HERMES_DASHBOARD_INSECURE=1` and the basic-auth environment
+   come from the units on `main` and were left alone. Whether that variable should stay is a
+   question for a human, not for a migration branch.
