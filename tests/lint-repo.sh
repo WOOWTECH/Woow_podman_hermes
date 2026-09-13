@@ -29,8 +29,14 @@ for f in "${files[@]}"; do [[ -f $f ]] && grep -Iq . "$f" 2>/dev/null && text+=(
 # $VAR / @@TOKEN@@ / <placeholder> / *_FILE path).
 cred_re='(^|[^A-Za-z0-9_])[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY)=[^[:space:]$@<"'\''`{}(%]'
 # Obvious placeholders (dummy/example/placeholder/changeme/redacted values) are not credentials.
+# Nor is a value that is not a value at all: `KEY=.*` is the left half of a sed s/// expression
+# (scripts that *generate* a credential match the pattern otherwise), and `KEY=sk-cp-...` is an
+# elided value in documentation. Neither can be a secret, and the token-shape check below is the
+# backstop that still catches a real sk-/ghp_/AKIA value wherever it appears.
 hits=$(grep -nHE "$cred_re" "${text[@]}" 2>/dev/null \
   | grep -vE '(_FILE|_PATH)=' \
+  | grep -vE '=\.\*' \
+  | grep -vE '=[^[:space:]]*\.\.\.' \
   | grep -viE '=[A-Za-z0-9_-]*(dummy|example|placeholder|changeme|redacted|your[_-]?)[A-Za-z0-9_-]*([[:space:]]|$)' || true)
 if [[ -n $hits ]]; then fail "literal credential assignments at:"; where <<<"$hits"; else ok "no literal credential assignments"; fi
 # Well-known defaults and token formats.
@@ -41,7 +47,12 @@ hits=$(grep -nHE "$known" "${text[@]}" 2>/dev/null || true)
 if [[ -n $hits ]]; then fail "default passwords or token-shaped strings at:"; where <<<"$hits"; else ok "no default passwords or token-shaped strings"; fi
 
 # ---- 2. D1: compose files are gone ---------------------------------------------------------------
-left=$(printf '%s\n' "${files[@]}" | grep -E '(^|/)(docker|podman)-compose[^/]*\.ya?ml$|^compose/|^\.env\.example$' || true)
+# D1 is about the live deployment path. archive/pre-quadlet-deployment/ is the compose-era tree
+# preserved from the openclaw host: it is never installed, sourced, executed or rendered, and its
+# README says so on the first line. Only this check is narrowed - the credential scan above and the
+# leaked-value gate below still cover the archive.
+left=$(printf '%s\n' "${files[@]}" | grep -v '^archive/pre-quadlet-deployment/' \
+  | grep -E '(^|/)(docker|podman)-compose[^/]*\.ya?ml$|^compose/|^\.env\.example$' || true)
 if [[ -n $left ]]; then fail "compose deployment files remain (D1):"; while IFS= read -r l; do printf "     %s\n" "$l"; done <<<"$left"; else ok "no compose files (D1)"; fi
 
 # ---- 3. READMEs --------------------------------------------------------------------------------

@@ -1,0 +1,120 @@
+# =============================================================
+# Hermes Agent Stack — Podman Compose (Pod Mode)
+# =============================================================
+# Agent + Dashboard 共享 localhost (Podman pod)
+# PostgreSQL + Redis 同 pod
+#
+# 用法:
+#   cp .env.example .env   # 填入 API keys
+#   podman-compose up -d
+#
+# 端口:
+#   9119 — Dashboard (Chat TUI + Config + MCP + Terminal)
+#   8642 — Gateway API (OpenAI-compatible)
+#
+# v0.17.0 — 移除 hermes-webui sidecar，統一由 Dashboard TUI 作為唯一 chat 介面
+# =============================================================
+
+x-podman:
+  in_pod: true
+
+services:
+  # ── 1. Hermes Agent (Gateway:8642 + Dashboard:9119) ──
+  hermes-agent:
+    image: docker.io/nousresearch/hermes-agent:latest
+    container_name: hermes-agent
+    ports:
+      - "18642:8642"
+      - "19119:9119"
+      - "18644:8644"
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    environment:
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_TUI=1
+      - HERMES_DASHBOARD_INSECURE=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${DASHBOARD_USERNAME:-admin}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${DASHBOARD_PASSWORD:-admin}
+      - HERMES_TUI_DIR=/opt/data/ui-tui
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - WEBHOOK_ENABLED=true
+      - WEBHOOK_PORT=8644
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - API_SERVER_CORS_ORIGINS=*
+      - GATEWAY_ALLOW_ALL_USERS=true
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - PLAYWRIGHT_BROWSERS_PATH=/opt/data/playwright-browsers
+      - HERMES_DASHBOARD_PUBLIC_URL=${HERMES_DASHBOARD_PUBLIC_URL:-http://localhost:19119}
+      - HERMES_BASE_URL=${HERMES_DASHBOARD_PUBLIC_URL:-http://localhost:19119}
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - PATH=/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - hermes-data:/opt/data
+    shm_size: "1g"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8642/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    # NOTE: podman-compose may not apply deploy.resources.limits.
+    # To enforce limits manually: podman update --memory 6g --cpus 3.0 hermes-agent
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: "3.0"
+
+  # ── 2. PostgreSQL 15 ──
+  postgresql:
+    image: docker.io/library/postgres:15
+    container_name: hermes-postgresql
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=hermes
+      - POSTGRES_USER=hermes
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── 3. Redis 7 ──
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: hermes-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hermes-data:
+  postgres-data:
+  redis-data:
+
+# Port mappings (added for host access)
+# Workaround: podman-compose 1.0.6 doesn't map ports in x-podman in_pod mode
+# Use explicit port-forward instead
