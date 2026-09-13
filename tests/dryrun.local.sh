@@ -33,12 +33,12 @@ check "the provisioning unit is pulled in by the agent" bash -c \
 check "example renders the default data volume name" has_line example hermes-data.volume 'VolumeName=hermes-data'
 check "example renders the default database volume name" has_line example hermes-postgres-data.volume 'VolumeName=hermes-postgres-data'
 check "example renders the default cache volume name" has_line example hermes-redis-data.volume 'VolumeName=hermes-redis-data'
-check "the openclaw adoption fixture renders the compose-era data volume" \
-  has_line fixture-openclaw-adopt hermes-data.volume 'VolumeName=podman_hermes-data'
-check "the openclaw adoption fixture renders the compose-era database volume" \
-  has_line fixture-openclaw-adopt hermes-postgres-data.volume 'VolumeName=podman_postgres-data'
-check "the openclaw adoption fixture renders the compose-era cache volume" \
-  has_line fixture-openclaw-adopt hermes-redis-data.volume 'VolumeName=podman_redis-data'
+check "the legacy-adoption fixture renders the compose-era data volume" \
+  has_line fixture-legacy-adopt hermes-data.volume 'VolumeName=podman_hermes-data'
+check "the legacy-adoption fixture renders the compose-era database volume" \
+  has_line fixture-legacy-adopt hermes-postgres-data.volume 'VolumeName=podman_postgres-data'
+check "the legacy-adoption fixture renders the compose-era cache volume" \
+  has_line fixture-legacy-adopt hermes-redis-data.volume 'VolumeName=podman_redis-data'
 # The network is never the compose one: adopting podman_default would make uninstall --purge delete
 # the legacy stack's network, and every "remove the stray podman_default" cleanup a rollback-killer.
 check "the network keeps its own name, not the compose project's" has_line example hermes.network 'NetworkName=hermes'
