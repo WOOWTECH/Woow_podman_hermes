@@ -114,6 +114,38 @@ app_env_record() {
 # app_secret_read <name>: print a podman secret's value on stdout. Capture it; never echo it.
 app_secret_read() { podman secret inspect --showsecret --format '{{.SecretData}}' "$1" 2>/dev/null; }
 
+# SECRET_HYGIENE_MIN_LEN: floor below which a raw substring hit is not trusted as a real leak (see
+# app_secret_leak_status). install.sh never generates anything shorter than 32 chars; the only way a
+# secret this repo checks is shorter is scripts/migrate-legacy.sh carry(), which imports whatever
+# length the legacy .env happened to hold. Keep this in sync with the comment at that call site.
+SECRET_HYGIENE_MIN_LEN=16
+
+# app_secret_leak_status <secret> <haystack...>: is <secret> a leak, given it was found (or not) in
+# one or more haystacks (journal text, container logs, ...)?
+#   clean   <secret> is empty, or none of the haystacks contain it
+#   warn    a haystack contains it, but <secret> is shorter than SECRET_HYGIENE_MIN_LEN chars - a raw
+#           substring search this short has a real chance of an accidental hit against ordinary text
+#           (container labels, MCP server names, config keys: anything with short alnum runs), so
+#           this is not trustworthy evidence of a leak on its own. Confirmed real case: the 8-char
+#           dashboard password migrate-legacy.sh carried over from a legacy .env was, by coincidence,
+#           a literal substring of both the io.woowtech.hermes.base image label and the
+#           woowtech_odoo_mcp MCP server name - neither of which had anything to do with the secret.
+#   fail    a haystack contains it and <secret> is at least SECRET_HYGIENE_MIN_LEN chars - at that
+#           length an accidental collision against real-world text is astronomically unlikely, so a
+#           hit is trusted as an actual leak.
+app_secret_leak_status() {
+  local secret=$1 hay
+  shift
+  [[ -n $secret ]] || { printf 'clean'; return 0; }
+  for hay in "$@"; do
+    if [[ $hay == *"$secret"* ]]; then
+      if ((${#secret} >= SECRET_HYGIENE_MIN_LEN)); then printf 'fail'; else printf 'warn'; fi
+      return 0
+    fi
+  done
+  printf 'clean'
+}
+
 # app_guard_containers: a same-named container that Quadlet does not manage would be deleted by
 # `podman run --replace`; refuse, and print the rename command.
 app_guard_containers() {

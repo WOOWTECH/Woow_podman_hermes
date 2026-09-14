@@ -137,15 +137,37 @@ if grep -q 'hermes 600' <<<"$state"; then pass "A9 /opt/data/.env is 0600"; else
 if grep -qx "$HERMES_IMAGE_TAG" <<<"$state"; then pass "A9 the TUI was re-synced for $HERMES_IMAGE_TAG"; else fail "A9 /opt/data/.woow-image-version is not $HERMES_IMAGE_TAG"; fi
 if grep -q 'skills' <<<"$state"; then pass "A9 the pinned skills seed is in place"; else warn "A9 the skills seed is missing (it is only copied when the user has none)"; fi
 
-# A10 secret hygiene
+# A10 secret hygiene. A raw substring search is the only practical way to check this without
+# parsing every log format, but it is only trustworthy for secrets at least SECRET_HYGIENE_MIN_LEN
+# chars long (app_secret_leak_status, scripts/common.sh): a short one (e.g. carried over from a
+# legacy .env by migrate-legacy.sh's carry(), which does not enforce install.sh's random:32/64
+# floor) has a real chance of coincidentally matching inside unrelated text - which is exactly what
+# happened during a live cutover, where an 8-char carried dashboard password matched both the
+# io.woowtech.hermes.base image label and the woowtech_odoo_mcp MCP server name and tripped
+# migrate-legacy.sh's auto-rollback on an otherwise clean migration.
 journal=$(journalctl --user -u hermes-agent.service -u hermes-provision.service -o cat --no-pager 2>/dev/null || true)
 logs=$(podman logs --tail 2000 hermes-agent 2>&1 || true)
-leak=0
-for secret in "$dash_pw" "$api_key"; do
-  [[ -n $secret ]] || continue
-  if [[ $journal == *"$secret"* || $logs == *"$secret"* ]]; then leak=1; fi
+leak=0 inconclusive=0
+for entry in "dashboard password:$dash_pw" "API key:$api_key"; do
+  label=${entry%%:*} secret=${entry#*:}
+  case $(app_secret_leak_status "$secret" "$journal" "$logs") in
+    fail)
+      leak=1
+      ql_warn "A10 the $label (${#secret} chars) appears verbatim in the journal or container log"
+      ;;
+    warn)
+      inconclusive=1
+      warn "A10 the $label is only ${#secret} chars (< $SECRET_HYGIENE_MIN_LEN) and coincidentally matches unrelated text in the journal or container log; treating as inconclusive rather than a confirmed leak. Rotate it (install.sh --rotate-secrets) to get a full-length secret and remove the ambiguity."
+      ;;
+  esac
 done
-if ((leak)); then fail "A10 a generated credential appears in the journal or the container log"; else pass "A10 no generated credential in the journal or the container log"; fi
+if ((leak)); then
+  fail "A10 a generated credential appears in the journal or the container log"
+elif ((inconclusive)); then
+  pass "A10 no generated credential in the journal or the container log (one short/carried secret was inconclusive; see WARN above)"
+else
+  pass "A10 no generated credential in the journal or the container log"
+fi
 if [[ -n $api_key && $(podman inspect hermes-agent 2>/dev/null || true) == *"$api_key"* ]]; then
   warn "A10 podman inspect shows the env-type secrets of the agent (podman behaviour)"
 fi
