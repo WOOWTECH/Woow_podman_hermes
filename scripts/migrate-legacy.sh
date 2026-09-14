@@ -435,6 +435,13 @@ carry() { # carry <secret> <container> <ENV KEY> <fallback length>
     ql_secret_ensure "$s" "random:$n"
     return 0
   fi
+  # A carried value keeps every client working (that is the point), but unlike random:$n it has no
+  # length floor - it is whatever the legacy .env happened to hold. Below SECRET_HYGIENE_MIN_LEN
+  # (scripts/common.sh, also tests/smoke.sh A10) a raw substring scan of logs can no longer tell a
+  # real leak from an accidental collision with ordinary text; flag it so the operator can judge.
+  if ((${#v} < SECRET_HYGIENE_MIN_LEN)); then
+    ql_warn "the legacy $c's $k is only ${#v} chars; carrying it to $s anyway, but it is weak and short enough that tests/smoke.sh A10 cannot reliably tell a real leak from a coincidental match. Consider --rotate-secrets"
+  fi
   # shellcheck disable=SC2034 # read by ql_secret_ensure through env:LEGACY_SECRET_VALUE
   LEGACY_SECRET_VALUE=$v
   ql_secret_ensure "$s" env:LEGACY_SECRET_VALUE --update

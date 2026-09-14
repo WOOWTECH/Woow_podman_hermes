@@ -5,6 +5,9 @@
 # tests/rollback-model.sh drives the legacy rollback helpers and the adoption proof of
 # scripts/migrate-legacy.sh against the doubles in tests/shims (podman, systemctl): no container is
 # created and the runner's user manager is never touched.
+#
+# tests/secret-hygiene.sh regression-tests app_secret_leak_status (scripts/common.sh), the helper
+# behind tests/smoke.sh's A10 check: no container, no shim, just the two sourced scripts.
 name: scripts-ci
 
 on:
@@ -32,3 +35,6 @@ jobs:
 
       - name: Legacy rollback model (rename vs capture), the writable-layer decision and the adoption proof
         run: tests/rollback-model.sh
+
+      - name: Secret-hygiene (A10) short-secret false positive vs genuine leak
+        run: tests/secret-hygiene.sh
