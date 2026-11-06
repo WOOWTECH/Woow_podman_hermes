@@ -2,6 +2,75 @@
 
 All notable changes to the WoowTech Hermes Agent deployment package.
 
+## [0.21.0-quadlet] - 2026-11-06
+
+Hermes Agent **v0.22.5**, aligned with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`):
+the same base, patches and provisioning defaults, without what only exists there (Ingress, the
+Supervisor token boundary, Paseo). New image tag `v0.22.5-woow1`.
+
+### Security
+- **Unattended dangerous commands are refused.** Approvals run with upstream's defaults
+  (`approvals.mode: smart`, `cron_mode` / `unattended_mode: deny`), so a dangerous command from a cron
+  job, the OpenAI-compatible API or a webhook is blocked; `tests/test-approval-gate.py` proves it in the
+  image. The `sed` in `woow-provision` that was meant to switch approvals off and cron to `yolo` is
+  removed rather than made to work: it never matched the v2026.8.31 template and does not match the
+  config v0.22.5 generates either, so this changes no running host. An existing `config.yaml` keeps
+  what it says.
+- **The MCP OAuth issuer check is no longer relaxed.** `iss-callback.py` and `iss-permissive.py` are
+  dropped: v0.22.5 carries the RFC 9207 `iss` natively, and `upstream-contract.py` proves its state and
+  issuer handling during the build. A server that returns a different issuer must fix its metadata;
+  reconnect the integration afterwards.
+- **Dashboard sessions are signed with a persistent secret,** the new podman secret
+  `hermes-dashboard-session-secret` (`HERMES_DASHBOARD_BASIC_AUTH_SECRET`), so a restart no longer logs
+  everyone out. `install.sh` and `migrate-legacy.sh` create it; `--rotate-secrets` rotates it with the
+  other three; `tests/smoke.sh` A10 scans for it.
+- **`/opt/data/.env` no longer carries a copy of a managed secret** (`API_SERVER_KEY`, `WEBHOOK_SECRET`,
+  `HERMES_DASHBOARD_BASIC_AUTH_*`): `.env` wins over the environment, so a stale copy would override the
+  podman secret. The boot hook strips them.
+- `podman exec hermes-agent hermes ...` runs as the hermes user again: the unit no longer overrides
+  `PATH`, which hid upstream's `/opt/hermes/bin` privilege-drop shim and left root-owned files behind.
+- `HERMES_DASHBOARD_INSECURE` is gone from the unit (v0.22.5 no longer reads it).
+
+### Fixed
+- `hermes-provision.service` no longer fails on v0.22.5: it enabled the `moa` and `homeassistant`
+  toolsets, which v0.22.5 removed (Home Assistant is a catalog plugin, MoA a model preset).
+
+### Added
+- `scoped-prompt-gc.py` (from the HA add-on): deleting a session reclaims only the system prompts that
+  session and its delegate children referenced, instead of every unreferenced prompt in the store.
+  Applied and verified against reviewed source hashes at build time.
+- `agent-browser` baked into the image from upstream's hash-checked package pin, and provisioning
+  defaults written only while a key is empty: `browser.backend off` (the built-in agent-browser on
+  the image's Chromium), `web.search_backend ddgs`, `web.extract_backend parallel` (ddgs cannot
+  extract), and `platforms.webhook.enabled` / `.extra.port` for the dashboard's Webhooks page.
+- `cont-init.d/03-woow-dotenv` replaces the `.env` rewrite: a provider key from `hermes.env` is written
+  only when its value changed since the last start, so a key edited in the dashboard survives a
+  restart. `GITHUB_TOKEN` is copied too.
+- Image ENV as in the HA add-on: `HERMES_DASHBOARD_PORT`, `HERMES_WRITE_SAFE_ROOT=/opt/data`, and the
+  S6 grace times (`S6_BEHAVIOUR_IF_STAGE2_FAILS=2`: a failed boot hook stops the container instead of
+  starting it half-provisioned).
+- Tests: `tests/test-config-contract.py`, `tests/test-scoped-prompt-gc.py`,
+  `tests/test-scoped-prompt-gc-patch.py` (CI); `tests/image-test.sh`, `tests/test-approval-gate.py`,
+  `tests/run-scoped-prompt-gc-image.py` (local, need the built image). `tests/patch-anchors.sh` now
+  checks the scoped-GC pin and the upstream contracts. `container/patches/PROVENANCE` records every
+  file taken from the HA add-on with its hash.
+
+### Changed
+- Base `docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f33...` (was `v2026.8.31`).
+- The TUI runs from the root-owned image tree: the `ui-tui` chown, `cont-init.d/016-fix-tui-perms`,
+  `HERMES_TUI_DIR=/opt/data/ui-tui` and the copy into the volume are gone (the stale copy is removed on
+  the first boot). `PLAYWRIGHT_BROWSERS_PATH` is the image's own again.
+- `HERMES_UID` / `HERMES_GID` stay at **1000** (v0.22.5 defaults to 10000). Volumes carried over from
+  the compose stack are owned by 1000, and v0.22.5's targeted ownership repair would leave most of such
+  a volume unreadable to 10000: the gateway then fails at boot. Fresh volumes work the same.
+- Generic settings moved from the unit into the image ENV; the unit keeps the permissive ones
+  (`GATEWAY_ALLOW_ALL_USERS`, `API_SERVER_CORS_ORIGINS`) visible.
+
+### Upgrade
+`git pull && scripts/upgrade.sh`. The upgrade builds `v0.22.5-woow1`, creates the session secret, and
+keeps `v2026.8.31-woow1` for a rollback. v0.22.5 migrates its SQLite schema forward on first start, so
+a rollback also needs `scripts/restore.sh` with the pre-upgrade archive.
+
 ## [0.20.0-quadlet] - 2026-09-12 (BREAKING)
 
 Quadlet + systemd is now the only deployment in this repo, and the image is immutable.

@@ -83,6 +83,7 @@ fi
 
 dash_pw=$(app_secret_read hermes-dashboard-password || true)
 api_key=$(app_secret_read hermes-api-server-key || true)
+session_secret=$(app_secret_read hermes-dashboard-session-secret || true)
 (umask 077 && printf 'user = "admin:%s"\n' "$dash_pw" >"$TMP/dashrc")
 (umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$api_key" >"$TMP/apirc")
 
@@ -114,28 +115,50 @@ auth=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -K "$TMP/apirc" "http://$hos
 if [[ $anon == 401 || $anon == 403 ]]; then pass "A6 /v1/models without the key returns $anon"; else fail "A6 /v1/models without the key returned $anon"; fi
 if [[ $auth == 200 ]]; then pass "A6 /v1/models with the key returns 200"; else fail "A6 /v1/models with the key returned $auth"; fi
 
-# A7 everything the old deploy.sh did to the running container is in the image
-if podman exec hermes-agent sh -c 'command -v tmux >/dev/null && test -x /usr/local/bin/officecli && test -L /usr/local/bin/hermes && /opt/hermes/.venv/bin/python3 -c "from ddgs import DDGS"' >/dev/null 2>&1; then
-  pass "A7 tmux, officecli, the hermes CLI and ddgs are in the image"
+# A7 everything the old deploy.sh did to the running container is in the image, plus the browser CLI
+if podman exec hermes-agent sh -c 'command -v tmux >/dev/null && test -x /usr/local/bin/officecli && test -L /usr/local/bin/hermes && command -v agent-browser >/dev/null && /opt/hermes/.venv/bin/python3 -c "from ddgs import DDGS"' >/dev/null 2>&1; then
+  pass "A7 tmux, officecli, the hermes CLI, agent-browser and ddgs are in the image"
 else
-  fail "A7 a baked-in tool is missing (tmux / officecli / hermes CLI / ddgs)"
+  fail "A7 a baked-in tool is missing (tmux / officecli / hermes CLI / agent-browser / ddgs)"
 fi
 
-# A8 immutability: the image layer is untouched, and the MCP OAuth patches are in it
-diff_lines=$(podman diff hermes-agent 2>/dev/null | grep -cE ' (/opt/hermes|/usr|/etc)' || true)
+# A8 immutability: the image layer is untouched, the native OAuth issuer handling and the scoped
+# prompt GC patch are in it
+# stage2 remaps the hermes account to HERMES_UID=1000 at boot (usermod/groupmod), which rewrites the
+# account database under /etc; that is expected and is the only write allowed there.
+diff_lines=$(podman diff hermes-agent 2>/dev/null | grep -E ' (/opt/hermes|/usr|/etc)' \
+  | grep -cvE '^C /etc$|^C /etc/(\.pwd\.lock|passwd-?|group-?|shadow-?|gshadow-?)$' || true)
 if [[ $diff_lines == 0 ]]; then pass "A8 nothing was written into the image layer"; else fail "A8 podman diff shows $diff_lines change(s) under /opt/hermes, /usr or /etc"; fi
 if podman exec hermes-agent grep -q 'iss: Optional\[str\] = None' /opt/hermes/hermes_cli/web_routers/mcp.py >/dev/null 2>&1; then
-  pass "A8 the MCP OAuth iss patch is present"
+  pass "A8 the MCP OAuth callback carries the RFC 9207 iss (upstream)"
 else
-  fail "A8 the MCP OAuth iss patch is missing from the running image"
+  fail "A8 the MCP OAuth callback no longer takes iss in the running image"
+fi
+if podman exec hermes-agent grep -q 'gc_roots' /opt/hermes/hermes_state_sessions.py >/dev/null 2>&1; then
+  pass "A8 the scoped prompt GC patch is present"
+else
+  fail "A8 the scoped prompt GC patch is missing from the running image"
 fi
 
 # A9 provisioning touched only the data volume, and the stamps are there
 state=$(podman exec hermes-agent sh -c 'stat -c "%U %a" /opt/data/config.yaml /opt/data/.env 2>/dev/null; test -f /opt/data/.woow-policy-v1 && echo stamp; cat /opt/data/.woow-image-version 2>/dev/null; test -f /opt/data/skills/brainstorming/SKILL.md && echo skills' 2>/dev/null || true)
-if grep -q '^hermes ' <<<"$state" && grep -q 'stamp' <<<"$state"; then pass "A9 config.yaml and .env belong to hermes, the policy stamp is set"; else fail "A9 provisioning state is incomplete: ${state//$'\n'/ | }"; fi
+if grep -q '^hermes ' <<<"$state" && grep -q 'stamp' <<<"$state"; then pass "A9 config.yaml and .env belong to hermes, the provisioning stamp is set"; else fail "A9 provisioning state is incomplete: ${state//$'\n'/ | }"; fi
 if grep -q 'hermes 600' <<<"$state"; then pass "A9 /opt/data/.env is 0600"; else fail "A9 /opt/data/.env is not 0600 hermes"; fi
-if grep -qx "$HERMES_IMAGE_TAG" <<<"$state"; then pass "A9 the TUI was re-synced for $HERMES_IMAGE_TAG"; else fail "A9 /opt/data/.woow-image-version is not $HERMES_IMAGE_TAG"; fi
+if grep -qx "$HERMES_IMAGE_TAG" <<<"$state"; then pass "A9 the boot hook ran for $HERMES_IMAGE_TAG"; else fail "A9 /opt/data/.woow-image-version is not $HERMES_IMAGE_TAG"; fi
 if grep -q 'skills' <<<"$state"; then pass "A9 the pinned skills seed is in place"; else warn "A9 the skills seed is missing (it is only copied when the user has none)"; fi
+# The managed secrets reach the agent from podman secrets only: a copy in .env would win over them.
+if podman exec hermes-agent grep -qE '^(API_SERVER_KEY|WEBHOOK_SECRET|HERMES_DASHBOARD_BASIC_AUTH_[A-Z_]*)=' /opt/data/.env >/dev/null 2>&1; then
+  fail "A9 /opt/data/.env carries a secret the unit manages; it would override the podman secret"
+else
+  pass "A9 /opt/data/.env carries none of the secrets the unit manages"
+fi
+defaults=$(podman exec -u hermes hermes-agent sh -c 'for k in web.search_backend web.extract_backend browser.backend platforms.webhook.enabled approvals.cron_mode; do printf "%s=%s\n" "$k" "$(/opt/hermes/.venv/bin/hermes config get "$k" 2>&1)"; done' 2>/dev/null || true)
+want=$'web.search_backend=ddgs\nweb.extract_backend=parallel\nbrowser.backend=off\nplatforms.webhook.enabled=true\napprovals.cron_mode=deny'
+if [[ $defaults == "$want" ]]; then
+  pass "A9 web/browser/webhook defaults are set and unattended commands are denied (cron_mode deny)"
+else
+  warn "A9 provisioning defaults differ (a value changed in the dashboard is kept): ${defaults//$'\n'/ | }"
+fi
 
 # A10 secret hygiene. A raw substring search is the only practical way to check this without
 # parsing every log format, but it is only trustworthy for secrets at least SECRET_HYGIENE_MIN_LEN
@@ -148,7 +171,7 @@ if grep -q 'skills' <<<"$state"; then pass "A9 the pinned skills seed is in plac
 journal=$(journalctl --user -u hermes-agent.service -u hermes-provision.service -o cat --no-pager 2>/dev/null || true)
 logs=$(podman logs --tail 2000 hermes-agent 2>&1 || true)
 leak=0 inconclusive=0
-for entry in "dashboard password:$dash_pw" "API key:$api_key"; do
+for entry in "dashboard password:$dash_pw" "API key:$api_key" "dashboard session secret:$session_secret"; do
   label=${entry%%:*} secret=${entry#*:}
   case $(app_secret_leak_status "$secret" "$journal" "$logs") in
     fail)
@@ -171,7 +194,7 @@ fi
 if [[ -n $api_key && $(podman inspect hermes-agent 2>/dev/null || true) == *"$api_key"* ]]; then
   warn "A10 podman inspect shows the env-type secrets of the agent (podman behaviour)"
 fi
-unset dash_pw api_key journal logs
+unset dash_pw api_key session_secret journal logs
 
 # A11 the webhook receiver is listening
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "http://$host:$webhook/" || true)

@@ -1,0 +1,58 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# Provider keys -> $HERMES_HOME/.env, which the TUI reads and which python-dotenv loads with
+# override=True. From the Home Assistant add-on (container/patches/PROVENANCE); the keys come from
+# ~/.config/hermes/hermes.env (EnvironmentFile=) instead of add-on options. A key is written only
+# when its value in hermes.env changed since the last start, so a key edited in the dashboard is not
+# wiped on every restart (0.20.0 rewrote the whole file on every boot). Removing a key from
+# hermes.env does not remove it here; delete it in the dashboard.
+set -euo pipefail
+DATA=/opt/data
+ENVF="$DATA/.env"
+# sha256 of the value last applied per key; root-only, so the agent cannot fake "already applied".
+APPLIED="$DATA/.woow-dotenv"
+
+umask 077
+for path in "$ENVF" "$APPLIED"; do
+    if [[ -L $path ]]; then
+        echo "[woow-dotenv] refusing to write through symlink $path" >&2
+        exit 1
+    fi
+done
+mkdir -p "$APPLIED"
+chown root:root "$APPLIED"
+chmod 0700 "$APPLIED"
+
+tmp=$(mktemp "$DATA/.env.woow.XXXXXX")
+trap 'rm -f "$tmp" "$tmp.n"' EXIT
+[[ -f $ENVF ]] && cat "$ENVF" >"$tmp"
+
+upsert() {
+    local key=$1 value=$2
+    grep -v "^${key}=" "$tmp" >"$tmp.n" || true
+    printf '%s=%s\n' "$key" "$value" >>"$tmp.n"
+    mv -f "$tmp.n" "$tmp"
+}
+
+for key in MINIMAX_API_KEY OPENROUTER_API_KEY GITHUB_TOKEN; do
+    value=${!key:-}
+    [[ -z $value ]] && continue
+    hash=$(printf '%s' "$value" | sha256sum | cut -d' ' -f1)
+    [[ "$(cat "$APPLIED/$key" 2>/dev/null || true)" == "$hash" ]] && continue
+    upsert "$key" "$value"
+    printf '%s\n' "$hash" >"$APPLIED/$key"
+    echo "[woow-dotenv] applied ${key} from hermes.env"
+done
+
+# .env wins over the environment, so a stale copy of a secret the unit manages (podman secrets) there
+# would silently override it.
+grep -Ev '^(API_SERVER_KEY|WEBHOOK_SECRET|HERMES_DASHBOARD_BASIC_AUTH_[A-Z_]*)=' "$tmp" >"$tmp.n" || true
+mv -f "$tmp.n" "$tmp"
+
+if [[ -f $ENVF ]] && cmp -s "$tmp" "$ENVF"; then
+    exit 0
+fi
+chown hermes:hermes "$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$ENVF"
+trap - EXIT

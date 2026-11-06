@@ -35,8 +35,8 @@ hermes_check_env() {
   fi
 }
 
-# hermes_wait_provision <timeout>: the oneshot provisioning unit must finish (it applies the config
-# policy once and fixes the model routes after the gateway is up)
+# hermes_wait_provision <timeout>: the oneshot provisioning unit must finish (it enables the tools
+# and plugins once, fixes the model routes and writes the defaults after the gateway is up)
 _hermes_provision_done() {
   [[ $(systemctl --user show -p ActiveState --value hermes-provision.service 2>/dev/null) == active ]]
 }

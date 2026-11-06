@@ -3,8 +3,9 @@
 # Runs an immutable local image built from container/Containerfile by scripts/build-image.sh (or the
 # CI-published GHCR image once that exists). Everything deploy.sh used to do with `podman exec`
 # against the live container is now either baked into the image (tmux, ddgs, OfficeCLI, CLI symlink,
-# skill trims, MCP OAuth iss patches, TUI ownership fix) or done by in-image provisioning scripts
-# (cont-init 020-woow-provision at boot; hermes-provision.service after the gateway is healthy).
+# skill trims, agent-browser, the upstream-contract and scoped-prompt-gc patches) or done by in-image
+# provisioning scripts (cont-init 020-woow-provision and 03-woow-dotenv at boot;
+# hermes-provision.service after the gateway is healthy).
 #
 # Agent state lives in SQLite under /opt/data (state.db, kanban.db, response_store.db). Postgres and
 # Redis are started alongside for parity with the compose stack; the agent is given no connection
@@ -17,7 +18,7 @@ After=hermes-postgres.service hermes-redis.service
 
 [Container]
 ContainerName=hermes-agent
-Image=localhost/woow-hermes-agent:v2026.8.31-woow1
+Image=localhost/woow-hermes-agent:v0.22.5-woow1
 Pull=never
 Network=hermes.network
 HostName=hermes-agent
@@ -35,26 +36,21 @@ PublishPort=@@HERMES_PUBLISH_GATEWAY@@:8642
 PublishPort=@@HERMES_PUBLISH_DASHBOARD@@:9119
 PublishPort=@@HERMES_PUBLISH_WEBHOOK@@:8644
 
-# --- non-secret runtime settings (same values the compose file set) ---
-Environment=HERMES_DASHBOARD=1
-Environment=HERMES_DASHBOARD_TUI=1
-Environment=HERMES_DASHBOARD_INSECURE=1
-Environment=HERMES_DASHBOARD_HOST=0.0.0.0
+# --- non-secret runtime settings ---
+# The ones every deployment shares (HERMES_DASHBOARD, the listen hosts and ports, WEBHOOK_ENABLED,
+# HERMES_WRITE_SAFE_ROOT, NODE_OPTIONS, DOTNET_*, the S6_* grace times) are ENV in the image, as in
+# the Home Assistant add-on. HERMES_DASHBOARD_INSECURE and HERMES_DASHBOARD_TUI are gone: v0.22.5
+# no longer reads them. PATH and PLAYWRIGHT_BROWSERS_PATH are the image's own again: the old PATH
+# hid /opt/hermes/bin, the shim that drops `podman exec ... hermes` from root to the hermes user.
+# The settings below widen access, so they stay visible here.
 Environment=HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
-Environment=HERMES_TUI_DIR=/opt/data/ui-tui
-Environment=API_SERVER_ENABLED=true
-Environment=API_SERVER_HOST=0.0.0.0
 Environment=API_SERVER_CORS_ORIGINS=*
-Environment=WEBHOOK_ENABLED=true
-Environment=WEBHOOK_PORT=8644
 Environment=GATEWAY_ALLOW_ALL_USERS=true
 # Container-side ids. Rootless: container uid 1000 is a subuid on the host, never the host user.
+# v0.22.5 defaults to 10000; 1000 is kept so a volume carried over from the compose stack (owned by
+# 1000) and a rollback to 0.20.0 keep working. stage2 remaps the hermes user at boot.
 Environment=HERMES_UID=1000
 Environment=HERMES_GID=1000
-Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/data/playwright-browsers
-Environment=DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
-Environment=NODE_OPTIONS=--max-old-space-size=4096
-Environment=PATH=/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # --- user-supplied values: public URL, LLM provider keys, GitHub token (0600 file, edited by the user) ---
 EnvironmentFile=%h/.config/hermes/hermes.env
@@ -62,6 +58,9 @@ EnvironmentFile=%h/.config/hermes/hermes.env
 Secret=hermes-api-server-key,type=env,target=API_SERVER_KEY
 Secret=hermes-webhook-secret,type=env,target=WEBHOOK_SECRET
 Secret=hermes-dashboard-password,type=env,target=HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+# Signs dashboard sessions. Without it upstream uses a per-process key and every restart logs
+# everyone out.
+Secret=hermes-dashboard-session-secret,type=env,target=HERMES_DASHBOARD_BASIC_AUTH_SECRET
 
 HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8642/health
 HealthInterval=15s

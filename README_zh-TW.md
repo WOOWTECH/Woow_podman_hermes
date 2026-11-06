@@ -20,8 +20,12 @@ webhook 接收器）以 rootless Podman
 就全部消失。在實際主機上 `podman diff hermes-agent` 回傳**零**行，沒有人能確認 MCP OAuth 修補是否真的生效。
 
 現在所有動到映像的步驟都在建置期由 `container/Containerfile` 完成，錨點消失或下載內容改變都會**讓建置失敗**。
-所有動到資料卷的步驟則由映像內的佈建腳本負責：開機時（`cont-init.d/020-woow-provision`），以及 gateway
-健康後執行一次（`hermes-provision.service` → `/usr/local/bin/woow-provision`）。
+所有動到資料卷的步驟則由映像內的佈建腳本負責：開機時（`cont-init.d/020-woow-provision`、
+`cont-init.d/03-woow-dotenv`），以及 gateway 健康後（`hermes-provision.service` → `/usr/local/bin/woow-provision`）。
+
+映像與佈建對齊 [Home Assistant add-on](https://github.com/WOOWTECH/Woow_ha_hermes_add_on)（Hermes v0.22.5）：
+相同的上游基底、修補與預設值，只少了 HA 才有的部分（Ingress、Supervisor token 邊界、Paseo）。
+取自該 add-on 的檔案與雜湊列在 `container/patches/PROVENANCE`。
 
 ## 安裝內容
 
@@ -30,11 +34,11 @@ webhook 接收器）以 rootless Podman
 | Agent | `hermes-agent`（單元 `hermes-agent.service`） | `localhost/woow-hermes-agent:<tag>`，本機建置、`Pull=never`。gateway 8642、dashboard 9119、webhook 8644，預設發布在 127.0.0.1。 |
 | 資料庫 | `hermes-postgresql`（單元 `hermes-postgres.service`） | `postgres:15.19`（digest 釘版），**不開主機埠**。 |
 | 快取 | `hermes-redis`（單元 `hermes-redis.service`） | `redis:7.4.11-alpine`（digest 釘版），**不開主機埠**。 |
-| 佈建 | `hermes-provision.service` | oneshot，`WantedBy=hermes-agent.service`：等待 `/health`，套用一次 WOOWTECH 設定政策（有 stamp），啟用 tools/plugins，並修正 model routes。 |
+| 佈建 | `hermes-provision.service` | oneshot，`WantedBy=hermes-agent.service`：等待 `/health`，啟用一次 WOOWTECH tools/plugins（有 stamp），修正 model routes，並在鍵仍為空時寫入 web／browser／webhook 預設值。 |
 | 網路 | `hermes` | 私有 bridge。 |
 | Volume | `hermes-data`、`hermes-postgres-data`、`hermes-redis-data` | agent 狀態（SQLite、sessions、skills、memories）在 `hermes-data`。 |
 | 設定 | `~/.config/hermes/hermes.env`（0600） | 供應商金鑰與公開 URL。 |
-| 憑證 | podman secrets `hermes-api-server-key`、`hermes-webhook-secret`、`hermes-dashboard-password`、`hermes-postgres-password` | 安裝時產生；不再有 `admin`／`admin` 預設值。 |
+| 憑證 | podman secrets `hermes-api-server-key`、`hermes-webhook-secret`、`hermes-dashboard-password`、`hermes-dashboard-session-secret`、`hermes-postgres-password` | 安裝時產生；不再有 `admin`／`admin` 預設值。session secret 用來簽署 dashboard 登入，重啟後不會把人登出。 |
 
 > **PostgreSQL 與 Redis 是對齊用的服務。** 本倉庫（以及先前的 compose 檔）都沒有給 agent 任何一方的連線
 > 設定，實機上它們的資料卷是空的，agent 的狀態存在 `/opt/data` 的 SQLite。保留它們是為了與 k3s chart 對齊，
@@ -68,7 +72,7 @@ scripts/install.sh                     # 建置映像、產生單元、驗證、
 | `--accept-defaults` | 第一次執行時直接採用範例設定繼續。 |
 | `--set KEY=VALUE` | 先寫入設定（可重複），例如 `--set WOOW_HERMES_MEMORY=3g`。 |
 | `--no-build` / `--rebuild` | 略過建置（tag 必須已存在）／重新建置（舊映像保留為 `<tag>-prev`）。 |
-| `--rotate-secrets` | 重新產生 API key、webhook secret 與 dashboard 密碼後重啟 agent；所有 API 用戶端、webhook 發送端與已儲存的登入都要跟著更新。 |
+| `--rotate-secrets` | 重新產生 API key、webhook secret、dashboard 密碼與 session secret 後重啟 agent；所有 API 用戶端、webhook 發送端與已儲存的登入都要跟著更新。 |
 | `--dry-run` | 只產生與驗證、列出會變更的內容，不動任何東西。 |
 
 重複執行 `install.sh` 是安全的：沒有變更時不會重啟任何東西。
@@ -97,15 +101,21 @@ podman secret inspect --showsecret --format '{{.SecretData}}' hermes-api-server-
 ```
 
 Hermes 本身會把供應商金鑰寫進資料卷（`/opt/data/.env`，0600；OpenRouter 還會寫進 `config.yaml` 的 model
-routes），dashboard TUI 就是從那裡讀取的；這在本版之前也是如此。
+routes），dashboard TUI 就是從那裡讀取的。開機 hook `03-woow-dotenv` **只在 `hermes.env` 的值自上次啟動後
+改變時**才寫入 `MINIMAX_API_KEY`、`OPENROUTER_API_KEY` 與 `GITHUB_TOKEN`，所以在 dashboard 改過的金鑰重啟後
+仍會保留（0.20.0 每次開機都重寫整個檔案）。`hermes.env` 裡的空值不會動到該檔；要刪除金鑰請在 dashboard 操作。
+由單元管理的 secrets 會從該檔移除，因為那裡的副本會蓋過 podman secret。
 
 ## 映像
 
 `container/Containerfile` 有兩個 target：
 
 - **`slim`（預設）** — 釘版的上游基底，加上舊 `deploy.sh` 對執行中容器做的那些事：tmux、`hermes` CLI
-  symlink、移除未用到的二進位與 skill 包、釘版的 `ddgs`、釘版並驗證校驗碼的 OfficeCLI、兩個 MCP OAuth
-  `iss` 修補、釘版的 superpowers skills 種子，以及 TUI 擁有權修正。最後一個建置步驟會逐項驗證它們真的存在。
+  symlink、移除未用到的二進位與 skill 包、釘版的 `ddgs`、釘版並驗證校驗碼的 OfficeCLI、釘版的 superpowers
+  skills 種子；並如同 HA add-on，加入以上游雜湊檢查的套件釘版安裝的 `agent-browser`，以及兩個建置期修補：
+  `upstream-contract.py`（驗證原生的 dashboard 登入、MCP OAuth state／issuer 處理與無人值守 approval 路徑）與
+  `scoped-prompt-gc.py`（刪除 session 時只回收該 session 參照的 system prompt，而不是所有未被參照的）。
+  最後一個建置步驟會逐項驗證它們真的存在。
 - **`full`** — `slim` 再加上舊 `docker/Dockerfile.hermes-agent` 的工具鏈（pandoc、texlive、CJK 字型、yq、
   gh、cloudflared 等）。podman 部署從未真的跑過它；gcloud、Playwright、httpie 與 yt-dlp 尚未移植。可用
   `WOOW_HERMES_IMAGE_TARGET=full` 選用。
@@ -113,12 +123,19 @@ routes），dashboard TUI 就是從那裡讀取的；這在本版之前也是如
 ```bash
 scripts/build-image.sh                 # tag 不存在時才建置
 scripts/build-image.sh --force         # 重新建置；舊映像保留為 <tag>-prev
-tests/patch-anchors.sh                 # 對照釘版的上游 tag 檢查 MCP OAuth 錨點
+tests/patch-anchors.sh                 # 對照釘版的上游 tag 檢查修補與上游契約
+tests/image-test.sh                    # 以拋棄式容器啟動建好的映像（本機，約 5 分鐘）
 ```
 
 升級上游基底時，必須同時更新 `scripts/common.sh` 的 `HERMES_BASE` 與 `HERMES_IMAGE_TAG`，以及
-`quadlet/hermes-agent.container` 的 `Image=`；CI 會檢查三者一致。基底釘在 `v2026.8.31`，該版本
-`iss-callback.py` 的每個錨點都還在；上游 `v2026.9.7` 已自行轉送 `iss`，升到該版本就必須移除那個修補。
+`quadlet/hermes-agent.container` 的 `Image=`；CI 會檢查三者一致。tag 格式為 `<上游 tag>-woow<N>`。基底以
+digest 釘在 `v0.22.5`，它已在自己的 dashboard OAuth 流程中轉送 RFC 9207 `iss`，因此舊的 `iss-callback.py`／
+`iss-permissive.py` 修補已移除，MCP SDK 的 issuer 檢查也不再放寬：回傳不同 issuer 的 OAuth 伺服器必須修正其
+metadata，之後重新連接該整合。
+
+`tests/image-test.sh [IMAGE]` 不發布任何埠，啟動映像兩次 — 一次用全新 volume，一次用像 compose 堆疊留下的、
+uid 1000 擁有的 volume — 檢查 s6、dashboard、佈建、`.env` 合併、登入在重啟後仍有效、approval gate 與 scoped
+prompt GC。CI 無法建置映像，請在發佈前於本機執行。
 
 ## 驗證
 
@@ -201,9 +218,9 @@ PostgreSQL 主版本與釘版不符（沿用的叢集無法原地升主版本）
   資料庫密碼同樣取自舊容器，因為 PostgreSQL 只在 initdb 時讀 `POSTGRES_PASSWORD_FILE`：在沿用的叢集上，
   記錄的 secret 必須就是叢集既有的密碼。`--align-db-password` 會額外執行 `ALTER ROLE`。
 * **設定政策是「標記」而非重新套用。** 除非 `/opt/data/.woow-policy-v1` 存在，
-  否則 `hermes-provision.service` 會套用 WOOWTECH 政策（對 `config.yaml` 做 `sed`，並啟用工具與外掛）。
-  `deploy.sh` 早已在這個 volume 上跑過該政策，而之後可能有人在 dashboard 改過設定，因此遷移會在 volume
-  閒置時寫入標記。`--reapply-config-policy` 可略過標記，讓佈建再跑一次。
+  否則 `hermes-provision.service` 會啟用 WOOWTECH 工具與外掛。`deploy.sh` 早已在這個 volume 上做過，
+  而之後可能有人在 dashboard 改過設定，因此遷移會在 volume 閒置時寫入標記。`--reapply-config-policy`
+  可略過標記，讓佈建再跑一次。（以前一起套用的 `sed` approval 政策已移除；見「安全性現況」。）
 
 埠沿用 compose 堆疊原本發佈的設定，包含 `0.0.0.0`。事後在 `~/.config/hermes/hermes.env` 設
 `WOOW_HERMES_BIND=127.0.0.1` 並重新執行 `scripts/install.sh` 即可收斂。
@@ -260,16 +277,25 @@ scripts/migrate-legacy.sh --rollback
 
 ## 安全性現況
 
-本版保留 agent 既有（寬鬆）的政策 — 關閉 approvals、`cron_mode: yolo`、自動接受、
-`GATEWAY_ALLOW_ALL_USERS=true`、`API_SERVER_CORS_ORIGINS=*`、`HERMES_DASHBOARD_INSECURE=1` — 因為改動它
-會改變既有使用者依賴的行為。本版新增的是：只在 loopback 發布、以產生的憑證取代 `admin`／`admin`，以及區網
-上的陌生人再也連不到 dashboard。檢討該政策值得另開 issue 處理。
+Approvals 採用**上游預設值**：`approvals.mode: smart`，`approvals.cron_mode`／`approvals.unattended_mode: deny`，
+所以來自 cron、OpenAI 相容 API 或 webhook（沒有人能核准）的危險指令會被拒絕（`tests/test-approval-gate.py`
+在映像內驗證）。0.20.0 帶有一段本意是關閉 approvals、把 cron 改成 `yolo` 的 `sed`，但它從未匹配設定範本，
+因此從未生效；本版將它移除而不是讓它生效（與 HA add-on 相同的決定）。既有的 `config.yaml` 保持原樣；
+請在 dashboard（**Config**）調整。
+
+仍然寬鬆、並在 `quadlet/hermes-agent.container` 中可見的：`GATEWAY_ALLOW_ALL_USERS=true` 與
+`API_SERVER_CORS_ORIGINS=*`。`HERMES_DASHBOARD_INSECURE` 已移除（v0.22.5 不再讀取）。本堆疊新增的是：只在
+loopback 發布、以產生的憑證取代 `admin`／`admin`、區網上的陌生人連不到 dashboard，以及穩定的 session 簽署。
+
+agent 以容器 uid **1000**（`HERMES_UID`）執行，而不是 v0.22.5 預設的 10000：從 compose 堆疊沿用的 volume
+屬於 1000，而 stage2 只做定點的擁有權修復，會讓這種 volume 的大部分內容對 10000 不可讀（gateway 開機即失敗）。
+全新 volume 兩者皆可；維持同一個值也讓回復到 0.20.0 仍然可行。
 
 ## 檔案
 
 ```
 container/Containerfile            映像：slim（對齊）與 full 兩個 target
-container/patches/                 MCP OAuth iss 修補（錨點消失時讓建置失敗）
+container/patches/                 與 HA add-on 共用的建置期修補，及其 PROVENANCE
 container/rootfs/                  映像內佈建：cont-init hooks 與 /usr/local/bin/woow-provision
 container/fix-model-routes.py      冪等的 model route 修正，由 woow-provision 執行
 quadlet/                           帶 @@VAR@@ 標記的單元；quadlet/render-vars 為白名單
@@ -281,7 +307,12 @@ scripts/                           build-image、install、upgrade、uninstall�
 scripts/legacy-common.sh           rename 與 capture 回復輔助函式、可寫層判斷、volume 沿用驗證
 scripts/lib/                       內嵌的 quadlet-lib（請勿修改；CI 會檢查其雜湊）
 tests/dryrun.sh                    產生單元 + Quadlet 4.9.3 dry-run + systemd-analyze verify（CI 與本機）
-tests/patch-anchors.sh             對照釘版上游 tag 檢查修補錨點
+tests/patch-anchors.sh             對照釘版上游 tag 檢查修補與契約（CI）
+tests/test-config-contract.py      靜態檢查映像／單元／佈建契約（CI）
+tests/test-scoped-prompt-gc*.py    以上游節錄驗證 scoped prompt GC（CI）
+tests/image-test.sh                以拋棄式容器啟動建好的映像（本機）
+tests/test-approval-gate.py        映像內的無人值守 approval gate（由 image-test 執行）
+tests/run-scoped-prompt-gc-image.py  以映像內的 SessionDB 驗證 scoped prompt GC（由 image-test 執行）
 tests/smoke.sh                     主機上的安裝後檢查
 tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認不再有 live mutation（CI）
 tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-routes.py 的結束碼（CI）
@@ -296,8 +327,10 @@ docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 | 症狀 | 檢查 |
 |---|---|
 | 建置在某個修補錨點失敗 | 上游改動了程式碼：執行 `tests/patch-anchors.sh`，再更新 `container/patches/` 或釘版的基底。 |
-| Dashboard 顯示 "No API key configured" | TUI 讀的是 `/opt/data/.env`，由開機 hook 從 env 檔寫入。設好 `MINIMAX_API_KEY` 後重啟 `hermes-agent.service`。 |
+| Dashboard 顯示 "No API key configured" | TUI 讀的是 `/opt/data/.env`，由開機 hook 從 env 檔合併寫入。設好 `MINIMAX_API_KEY` 後重啟 `hermes-agent.service`。 |
+| `hermes.env` 改了金鑰卻沒生效 | 在 `hermes.env` 的值再次改變前，`/opt/data/.env` 裡 dashboard 的副本優先；請在 dashboard 修改，或改 `hermes.env` 後重啟。 |
+| MCP OAuth 登入因 issuer 不符失敗 | v0.22.5 保留 SDK 的 RFC 9207 檢查。修正伺服器的 issuer metadata 後重新連接該整合。 |
 | `hermes-provision.service` 失敗 | `journalctl --user -u hermes-provision.service -n 100`。它最多等 5 分鐘的 `/health`，agent 必須先健康。 |
-| 升級後 TUI 看起來是舊的 | 映像版本改變時開機 hook 會重新同步 `/opt/data/ui-tui`；檢查 `/opt/data/.woow-image-version`。 |
+| 升級後 TUI 看起來是舊的 | TUI 直接從映像（`/opt/hermes/ui-tui`）執行，新映像就是新 TUI；重新整理頁面。`/opt/data/.woow-image-version` 記錄最後開機此 volume 的映像。 |
 | 少了某個以前 `deploy.sh` 會裝的工具 | 把它加進 `container/Containerfile` 後重建。依設計，現在不會再往執行中的容器安裝任何東西。 |
 | 登出或重開機後單元消失 | `loginctl show-user $USER -p Linger` 必須是 `yes`。 |
