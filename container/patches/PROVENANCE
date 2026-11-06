@@ -59,6 +59,8 @@ Local changes (Paseo):
   paseo_ingress_url); the validation is unchanged.
 - cont-init.d/04-woow-paseo-origin replaces HA's paseo_ingress_url block in 00-woow-options: it reads
   HERMES_PASEO_EXTRA_ORIGIN from the environment (hermes.env) instead of /data/options.json.
+- 03-woow-dotenv also copies LITELLM_API_KEY (the Omnigent plugin's direct-execution sessions see only
+  /opt/data/.env).
 - 03-woow-dotenv also strips HERMES_DASHBOARD_PUBLIC_URL, HERMES_BASE_URL and HERMES_PASEO_* from
   /opt/data/.env: .env overrides the environment, so a copy there (`hermes dashboard register` writes
   one) would silently move the OAuth callback and the Paseo origin away from hermes.env.

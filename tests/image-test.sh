@@ -11,7 +11,7 @@
 # B1 boot on a fresh volume: s6 is PID 1, the gateway and the dashboard answer, both run as uid 1000
 # B2 woow-provision (what hermes-provision.service runs) exits 0, twice, and writes its defaults;
 #    upstream's approval defaults (smart, cron/unattended deny) are left alone
-# B3 /opt/data/.env: a key from the env file is applied once; a key edited in the dashboard survives
+# B3 /opt/data/.env: a key from the env file (MiniMax, LiteLLM) is applied once; a key edited in the dashboard survives
 #    a restart; a changed env-file value is applied; secrets the unit manages are stripped
 # B4 a dashboard login survives a restart (HERMES_DASHBOARD_BASIC_AUTH_SECRET)
 # B5 the unattended approval gate (tests/test-approval-gate.py) and the scoped prompt GC
@@ -72,6 +72,7 @@ HERMES_BASE_URL=$pub
 HERMES_PASEO_EXTRA_ORIGIN=${3:-}
 MINIMAX_API_KEY=$1
 OPENROUTER_API_KEY=
+LITELLM_API_KEY=imagetest-litellm-dummy
 API_SERVER_KEY=$API_KEY
 WEBHOOK_SECRET=$WEBHOOK
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=$DASH_PW
@@ -121,6 +122,7 @@ check "B2 the tools/plugins stamp is set" in_c 'test -f /opt/data/.woow-policy-v
 
 # ---- B3/B4 ---------------------------------------------------------------------------------------
 check "B3 MINIMAX_API_KEY from the env file is in /opt/data/.env" test "$(envkey MINIMAX_API_KEY)" = imagetest-minimax-1
+check "B3 LITELLM_API_KEY from the env file is in /opt/data/.env (Omnigent sessions read only that file)" test "$(envkey LITELLM_API_KEY)" = imagetest-litellm-dummy
 check "B3 /opt/data/.env is 0600 hermes" test "$(in_c 'stat -c "%U %a" /opt/data/.env')" = "hermes 600"
 # log in through the dashboard, from inside the container (no host port)
 login='import json,os,urllib.request as u

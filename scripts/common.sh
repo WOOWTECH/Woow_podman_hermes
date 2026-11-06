@@ -13,7 +13,7 @@ BACKUP_ROOT=$HOME/.local/share/woow-backups/$APP
 # container:unit pairs the units create (legacy-collision guard)
 CONTAINERS=("hermes-agent:hermes-agent.service" "hermes-postgresql:hermes-postgres.service" "hermes-redis:hermes-redis.service")
 # env keys allowed to carry user-supplied credentials (ERE on the whole key; empty = none)
-ENV_CREDENTIAL_ALLOW='(MINIMAX_API_KEY|OPENROUTER_API_KEY|GITHUB_TOKEN|MCP_[A-Z0-9_]+)'
+ENV_CREDENTIAL_ALLOW='(MINIMAX_API_KEY|OPENROUTER_API_KEY|LITELLM_API_KEY|GITHUB_TOKEN|MCP_[A-Z0-9_]+)'
 # scripts/migrate-legacy.sh, capture path (STANDARD 7a): containers whose own deploy or upgrade
 # script writes into the running container, so a capture must commit the writable layer first.
 # The compose-era deploy/podman/deploy.sh apt-installed tmux, uv-installed ddgs into the agent venv,
@@ -27,7 +27,7 @@ LEGACY_COMMIT_ALWAYS='hermes-agent'
 LEGACY_COMMIT_RW_BYTES=1048576
 # the agent image: one tag per base + patch set, so an upgrade keeps the previous image for rollback.
 # tests/dryrun.local.sh checks both against quadlet/hermes-agent.container and container/Containerfile.
-HERMES_IMAGE_TAG=v0.22.5-woow2
+HERMES_IMAGE_TAG=v0.22.5-woow3
 HERMES_BASE=docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 HERMES_IMAGE=localhost/woow-hermes-agent:$HERMES_IMAGE_TAG
 # ------------------------------------------------------------------------------------------------

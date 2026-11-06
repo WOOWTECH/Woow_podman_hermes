@@ -34,7 +34,10 @@ upsert() {
     mv -f "$tmp.n" "$tmp"
 }
 
-for key in MINIMAX_API_KEY OPENROUTER_API_KEY GITHUB_TOKEN; do
+# LITELLM_API_KEY (Podman only): the key of an OpenAI-compatible gateway named by config.yaml's
+# key_env. The gateway reads it from the environment too, but the Omnigent plugin's direct-execution
+# sessions start their own gateway from a scrubbed environment and see only /opt/data/.env.
+for key in MINIMAX_API_KEY OPENROUTER_API_KEY LITELLM_API_KEY GITHUB_TOKEN; do
     value=${!key:-}
     [[ -z $value ]] && continue
     hash=$(printf '%s' "$value" | sha256sum | cut -d' ' -f1)

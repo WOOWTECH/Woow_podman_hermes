@@ -22,7 +22,8 @@ hermes_check_memory() {
   fi
 }
 
-# hermes_check_env: the settings the agent cannot start usefully without
+# hermes_check_env <no_llm>: the settings the agent cannot start usefully without. A provider key
+# is wanted unless --no-llm: any of the three provider keys hermes.env carries will do.
 hermes_check_env() {
   local no_llm=$1 pub base
   pub=$(ql_env_get HERMES_DASHBOARD_PUBLIC_URL '')
@@ -30,9 +31,12 @@ hermes_check_env() {
   [[ -n $pub ]] || ql_die "HERMES_DASHBOARD_PUBLIC_URL is empty; MCP OAuth callbacks need the URL the dashboard is opened from"
   ql_assert_match HERMES_DASHBOARD_PUBLIC_URL "$pub" 'https?://[^[:space:]/]+(/.*)?'
   [[ $pub == "$base" ]] || ql_die "HERMES_DASHBOARD_PUBLIC_URL and HERMES_BASE_URL must be the same value"
-  if ((no_llm == 0)) && [[ -z $(ql_env_get MINIMAX_API_KEY '') ]]; then
-    ql_die "MINIMAX_API_KEY is empty in $ENV_FILE. Set it, or run with --no-llm for a platform-only install"
-  fi
+  ((no_llm == 0)) || return 0
+  local k
+  for k in MINIMAX_API_KEY OPENROUTER_API_KEY LITELLM_API_KEY; do
+    [[ -z $(ql_env_get "$k" '') ]] || return 0
+  done
+  ql_die "no LLM provider key in $ENV_FILE (MINIMAX_API_KEY, OPENROUTER_API_KEY or LITELLM_API_KEY). Set one, or run with --no-llm (scripts/upgrade.sh passes it on) when the provider is configured in the dashboard or in config.yaml instead"
 }
 
 # hermes_wait_provision <timeout>: the oneshot provisioning unit must finish (it enables the tools

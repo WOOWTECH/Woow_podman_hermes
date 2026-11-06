@@ -59,7 +59,7 @@ webhook 接收器）以 rootless Podman
 git clone https://github.com/WOOWTECH/Woow_podman_hermes.git
 cd Woow_podman_hermes
 scripts/install.sh                     # 第一次：建立 ~/.config/hermes/hermes.env 後停下讓你檢查
-nano ~/.config/hermes/hermes.env       # 填 MINIMAX_API_KEY 與 dashboard 公開 URL
+nano ~/.config/hermes/hermes.env       # 填一個供應商金鑰（或改用 --no-llm）與 dashboard 公開 URL
 scripts/install.sh                     # 建置映像、產生單元、驗證、啟動、佈建、smoke
 ```
 
@@ -68,7 +68,7 @@ scripts/install.sh                     # 建置映像、產生單元、驗證、
 
 | 選項 | 作用 |
 |---|---|
-| `--no-llm` | 不需供應商金鑰即可安裝（只做平台檢查）。 |
+| `--no-llm` | `hermes.env` 不放供應商金鑰也能安裝（只裝平台，或供應商在 dashboard／`config.yaml` 設定）。 |
 | `--accept-defaults` | 第一次執行時直接採用範例設定繼續。 |
 | `--set KEY=VALUE` | 先寫入設定（可重複），例如 `--set WOOW_HERMES_MEMORY=3g`。 |
 | `--no-build` / `--rebuild` | 略過建置（tag 必須已存在）／重新建置（舊映像保留為 `<tag>-prev`）。 |
@@ -85,8 +85,8 @@ scripts/install.sh                     # 建置映像、產生單元、驗證、
 |---|---|---|
 | `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | 瀏覽器開啟 dashboard 的精確 Origin（經 tunnel 時填其 `https://` Origin，不含路徑）。MCP OAuth callback 會回到這裡，Paseo 插件也只接受來自它的瀏覽器請求。兩行必須相同。見[公開網址與 HTTPS](#公開網址與-https)。 |
 | `HERMES_PASEO_EXTRA_ORIGIN` | 空 | 選用：Paseo 的第二個精確 Origin，例如公開網址是 tunnel 時填 `http://127.0.0.1:19119`。見 [Paseo](#paseo)。 |
-| `MINIMAX_API_KEY` | 空 | 除非以 `--no-llm` 安裝，否則必填。 |
-| `OPENROUTER_API_KEY`、`GITHUB_TOKEN`、`MCP_*` | 空 | 選用的供應商與 MCP 金鑰。 |
+| `MINIMAX_API_KEY`、`OPENROUTER_API_KEY`、`LITELLM_API_KEY` | 空 | 供應商金鑰。`install.sh` 至少要其中一個；供應商若在 dashboard 或 `config.yaml` 設定，執行 `install.sh`（或 `upgrade.sh`）時加 `--no-llm`。`LITELLM_API_KEY` 是 [OpenAI 相容閘道](#litellm-等-openai-相容閘道)的金鑰。 |
+| `GITHUB_TOKEN`、`MCP_*` | 空 | 選用的 GitHub 與 MCP 金鑰。 |
 | `WOOW_HERMES_BIND` | `127.0.0.1` | 三個埠發布的位址；`all` 同時涵蓋 IPv4 與 IPv6。 |
 | `WOOW_HERMES_PORT_GATEWAY` / `_DASHBOARD` / `_WEBHOOK` | `18642` / `19119` / `18644` | 主機埠。 |
 | `WOOW_HERMES_MEMORY` / `WOOW_HERMES_CPUS` | `6g` / `3` | agent 容器的限制。 |
@@ -103,9 +103,61 @@ podman secret inspect --showsecret --format '{{.SecretData}}' hermes-api-server-
 
 Hermes 本身會把供應商金鑰寫進資料卷（`/opt/data/.env`，0600；OpenRouter 還會寫進 `config.yaml` 的 model
 routes），dashboard TUI 就是從那裡讀取的。開機 hook `03-woow-dotenv` **只在 `hermes.env` 的值自上次啟動後
-改變時**才寫入 `MINIMAX_API_KEY`、`OPENROUTER_API_KEY` 與 `GITHUB_TOKEN`，所以在 dashboard 改過的金鑰重啟後
+改變時**才寫入 `MINIMAX_API_KEY`、`OPENROUTER_API_KEY`、`LITELLM_API_KEY` 與 `GITHUB_TOKEN`，所以在 dashboard 改過的金鑰重啟後
 仍會保留（0.20.0 每次開機都重寫整個檔案）。`hermes.env` 裡的空值不會動到該檔；要刪除金鑰請在 dashboard 操作。
 由單元管理的 secrets 會從該檔移除，因為那裡的副本會蓋過 podman secret。
+
+### LiteLLM 等 OpenAI 相容閘道
+
+任何 OpenAI 相容端點（LiteLLM、vLLM、公司內部閘道）都能設成 Hermes 的具名供應商。照下面的方式宣告，**列出的
+每個模型都會出現在 dashboard、ACP 用戶端與 Paseo 的模型清單**，以及 Omnigent 的模型清單；只設
+`model.base_url` 則只會列出目前的模型。
+
+1. 把金鑰放進 `hermes.env` 並套用（新的環境值要重建容器，`install.sh` 偵測到檔案變更會自動處理）：
+
+   ```bash
+   # ~/.config/hermes/hermes.env
+   LITELLM_API_KEY=sk-...
+   ```
+   ```bash
+   scripts/install.sh            # 或 scripts/upgrade.sh；若這是唯一的供應商請加 --no-llm
+   ```
+
+2. 宣告供應商與模型（資料卷中的 `config.yaml`；不必重啟，下一個 session 與執行中的 gateway 都會讀到）：
+
+   ```bash
+   podman exec hermes-agent hermes config set providers.litellm.name LiteLLM
+   podman exec hermes-agent hermes config set providers.litellm.base_url https://litellm.example.com/v1
+   podman exec hermes-agent hermes config set providers.litellm.key_env LITELLM_API_KEY
+   podman exec hermes-agent hermes config set providers.litellm.models '["deepseek/deepseek-v4.1-flash","z-ai/glm-5.3-flash"]'
+   podman exec hermes-agent hermes config set providers.litellm.discover_models false
+   podman exec hermes-agent hermes config set model.provider custom:litellm
+   podman exec hermes-agent hermes config set model.default deepseek/deepseek-v4.1-flash
+   ```
+
+   對應的 `config.yaml`：
+
+   ```yaml
+   model:
+     provider: custom:litellm
+     default: deepseek/deepseek-v4.1-flash
+   providers:
+     litellm:
+       name: LiteLLM
+       base_url: https://litellm.example.com/v1
+       key_env: LITELLM_API_KEY
+       models: [deepseek/deepseek-v4.1-flash, z-ai/glm-5.3-flash]
+       discover_models: false
+   ```
+
+- base URL 以 `/v1` 結尾。`key_env` 只寫變數名稱，金鑰本身不進 `config.yaml`。
+- `discover_models: false` 讓清單只有你宣告的模型。少了它，Hermes 會再查閘道的 `/models`，列出這把金鑰
+  能用的**所有**模型（測試用的閘道有 85 個），宣告的排在前面。
+- ACP 與 Paseo 中模型 ID 為 `custom:litellm:<model>`（顯示名稱是原本的模型 ID）。目前模型由
+  `model.provider` + `model.default` 決定；在 Paseo 或 ACP 切換時用帶前綴的 ID。若還留著舊的 OpenRouter
+  `base_url`，執行 `hermes config unset model.base_url`。
+- 已在 `v0.22.5-woow3` 對 LiteLLM 閘道實測：ACP `session/new` 剛好列出兩個模型，兩者各自回覆提示
+  （`stopReason: end_turn`）；Omnigent 的 catalog 也列出這兩個，並各自通過對話驗證。
 
 ### 公開網址與 HTTPS
 
@@ -155,6 +207,68 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 不是精確 Origin；`ORIGIN_DENIED` 表示瀏覽器的 Origin 兩者都不是。修正 `hermes.env` 後再執行
 `scripts/install.sh`；不要關閉來源驗證。
 
+### Omnigent
+
+[Omnigent 插件](https://github.com/WOOWTECH/hermes-omnigent-plugin)（`0.1.0-rc.16`，Omnigent `0.20.0`）讓
+這個 Hermes 連到 Omnigent server，在這台主機上執行 Omnigent 對話。與 Home Assistant 相同，它是**選用**的：
+不隨映像附帶，升級也不會安裝或啟用它。
+
+> **安全性。** Omnigent server 上每個能使用這台主機的帳號，都等於取得**這個 agent 容器裡的 shell**：
+> Hermes 以容器的 `hermes` 使用者執行這些對話，可存取它的檔案（`/opt/data`：`.env` 裡的供應商金鑰、
+> `config.yaml`、對話、Omnigent 登入 token）與網路。請用**專用、非管理者**的 Omnigent 帳號配對，且只用於
+> 這台主機，並決定 server 上誰能使用它。**取消連結不會撤銷 server 端的授權**：它只清除本機登入，主機的註冊與
+> 歷史仍留在 server（顯示離線）。`hermes-data` 的備份含插件的私有執行環境（約 0.6 GB）、Omnigent 登入 token
+> 與主機識別，請當成機密保管。
+
+在這個 stack 實測的需求：
+
+- `/opt/data/omnigent-plugin` 約 **0.6–0.7 GB**（私有 uv、Python 3.12 與 Omnigent 0.20.0；安裝 25–35 秒）。
+  需要連到 GitHub（插件原始碼）、PyPI（Omnigent）、`deb.debian.org`（Bubblewrap，解包到插件目錄）與
+  Omnigent server。
+- tmux ≥ 3.3：映像內為 3.5a。
+- **直接執行。** Omnigent 發起的 Hermes 0.22 對話，只有在插件的「允許 Hermes 直接執行」同意
+  （`sandbox=none`）下才能運作，與 Home Assistant 相同。沒有這項同意時，對話中的 Hermes 連不到 gateway，
+  插件回報 `REQUIRED_TERMINAL_EXITED`（`Gateway inaccessible: profile_mismatch`），不論 Bubblewrap
+  是否可用。容器就是 sandbox，與 Woow_podman_opendesign 相同：rootless（容器 root 是主機上的非特權 uid）、
+  有記憶體與 CPU 上限，除 `hermes-data` volume 外沒有掛載主機路徑。它不是網路邊界：對話沿用容器的對外連線，
+  也能連到 `hermes` 網路上的 `hermes-postgresql` 與 `hermes-redis`。
+- **不需要任何 Podman 安全選項。** rootless Podman 中 Bubblewrap 能建立插件探測所需的 user namespace，
+  所以配對面板**不會**停在 `SANDBOX_NAMESPACE_UNAVAILABLE`，也不會顯示直接執行的勾選框。Omnigent 自己的
+  Bubblewrap sandbox（在新的 PID namespace 掛載新的 `/proc`）在這裡會失敗：
+  `Can't mount proc on /proc: Operation not permitted`，因為 Podman 遮蔽了部分 `/proc`；只有
+  `--security-opt unmask=/proc/*`（或 `unmask=ALL`／`systempaths=unconfined`）能解決，而且作用於容器內所有
+  程序。它對 Hermes 沒有幫助（見上），所以 stack 不設定它。
+
+安裝與配對：
+
+1. 先設好可用的模型（例如 [LiteLLM 設定](#litellm-等-openai-相容閘道)）。金鑰必須在 `hermes.env`（或在
+   dashboard 輸入）：Omnigent 的對話讀 `/opt/data/.env`，不讀容器環境變數。
+2. Dashboard → **Plugins** → *Git URL or owner/repo*：`WOOWTECH/hermes-omnigent-plugin`，安裝並啟用。Hermes
+   會警告 `custom (unreviewed) source`，這是非官方目錄來源的一般提示；若頁面另外顯示執行程序的 caution，處理方式同 Paseo。以 CLI 釘版安裝（完整 commit SHA，
+   不能用 tag）：
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 6c86ebb4455083d50e3fed9f6d6a25c2dff56e9e --enable`
+   （2026-11-06 這個 CLI 安裝除上述提示外沒有其他輸出，不需要 `--force`）。
+3. 由於這裡的面板沒有直接執行勾選框，請從主機配對：
+
+   ```bash
+   scripts/omnigent.sh pair --server https://omnigent.example.com --user hermes-host-1 --allow-direct-hermes
+   ```
+
+   它會重述上面的警告，要求輸入 `direct`，以不回顯的方式讀取密碼並經 stdin 交給插件。插件安裝執行環境、
+   連線，並在真實 Hermes 對話回覆後才回報成功（`"reply": "OMNIGENT_CONNECTION_OK"`）。
+4. `scripts/omnigent.sh status`、`catalog`（Omnigent 會提供的 Hermes 模型）、`verify [--model ID]`、
+   `acceptance --chat`。配對在 `hermes-agent` 重啟後保留（主機約 20 秒內重新連線）。新登入，或停用後再啟用
+   插件，都要重新執行 `pair`。
+
+移除：`scripts/omnigent.sh disconnect`（或插件設定頁的 **取消連結**），再到 Plugins 頁移除插件。移除不會刪除
+`/opt/data/omnigent-plugin`；先重啟 `hermes-agent`，再刪除該目錄
+（`podman exec -u hermes hermes-agent rm -rf /opt/data/omnigent-plugin`）。
+
+2026-11-06 以 `v0.22.5-woow3` 對本機 Omnigent 0.20.0 server（accounts 驗證）與 LiteLLM 實測：安裝、配對、
+`catalog` 列出兩個模型、兩個模型各自 `verify`、`acceptance --chat`、重啟、取消連結。未涵蓋：瀏覽器面板（Plugins 頁、
+配對面板）、遠端 HTTPS Omnigent server、Claude Code／Codex／Pi 引擎（映像內沒有）、Paseo 自己的模型選單（已測它
+所讀取的 ACP 清單）。
+
 ## 映像
 
 `container/Containerfile` 有兩個 target：
@@ -203,10 +317,11 @@ Dashboard 在 `http://127.0.0.1:19119/`（使用者 `admin`）；從其他機器
 
 ```bash
 git pull
-scripts/upgrade.sh
+scripts/upgrade.sh                       # [--no-llm] [--set KEY=VALUE]... [--rebuild] [--no-backup]
 ```
 
-備份、單元快照、建置、`install.sh`、smoke。失敗時放回原本的單元，也就回到先前的映像 tag。agent 會把
+備份、單元快照、建置、`install.sh`、smoke。`--no-llm`、`--set` 與 `--rebuild` 會傳給 `install.sh`：
+`hermes.env` 沒有供應商金鑰、供應商設在 dashboard 或 `config.yaml` 時，請加 `--no-llm`。失敗時放回原本的單元，也就回到先前的映像 tag。agent 會把
 SQLite schema 向前遷移，跨 schema 變更的回復還需要用 `scripts/restore.sh` 還原升級前的封存檔。
 
 ## 備份與還原
@@ -354,7 +469,7 @@ systemd/hermes-provision.service   gateway 健康後執行 woow-provision 的 on
 config/hermes.env.example          ~/.config/hermes/hermes.env 的範本
 config/golden-config.yaml          參考設定（不會自動套用）
 scripts/                           build-image、install、upgrade、uninstall、backup、restore、
-                                   migrate-legacy
+                                   migrate-legacy、omnigent（選用的 Omnigent 插件）
 scripts/legacy-common.sh           rename 與 capture 回復輔助函式、可寫層判斷、volume 沿用驗證
 scripts/lib/                       內嵌的 quadlet-lib（請勿修改；CI 會檢查其雜湊）
 tests/dryrun.sh                    產生單元 + Quadlet 4.9.3 dry-run + systemd-analyze verify（CI 與本機）
@@ -369,6 +484,7 @@ tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認
 tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-routes.py 的結束碼（CI）
 tests/rollback-model.sh            以 tests/shims 驗證回復模型、可寫層判斷與沿用驗證（CI）
 tests/resource-recreate.sh         在 systemd 之外被刪除的網路／volume 會重建（CI）
+tests/install-flags.sh             upgrade.sh 傳遞的安裝選項、供應商金鑰檢查、--set 警告（CI）
 tests/test-paseo-vendor.py         Paseo 主機介面的釘版與封裝（CI）
 tests/test-paseo-origin.py         額外 Paseo Origin 的驗證，開機 hook 與 install.sh 一致（CI）
 tests/shims/                       podman 與 systemctl 測試替身；不會建立任何容器
@@ -388,6 +504,9 @@ docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 | 升級後 TUI 看起來是舊的 | TUI 直接從映像（`/opt/hermes/ui-tui`）執行，新映像就是新 TUI；重新整理頁面。`/opt/data/.woow-image-version` 記錄最後開機此 volume 的映像。 |
 | 少了某個以前 `deploy.sh` 會裝的工具 | 把它加進 `container/Containerfile` 後重建。依設計，現在不會再往執行中的容器安裝任何東西。 |
 | 登出或重開機後單元消失 | `loginctl show-user $USER -p Linger` 必須是 `yes`。 |
+| `install.sh` 或 `upgrade.sh` 停在 "no LLM provider key" | 在 `hermes.env` 放一個金鑰；供應商設在 dashboard 或 `config.yaml` 時改加 `--no-llm`。 |
+| Omnigent 回報 `REQUIRED_TERMINAL_EXITED`（`profile_mismatch`） | 配對時沒有直接執行同意：執行 `scripts/omnigent.sh pair ... --allow-direct-hermes`（[Omnigent](#omnigent)）。 |
+| Dashboard 正常，但 Omnigent 的 Hermes 回 401／沒有 API key | 金鑰只在容器環境變數裡。放進 `hermes.env`（`03-woow-dotenv` 會複製到 `/opt/data/.env`）後重啟。 |
 | `unable to find network with name or ID hermes` | 網路在 systemd 之外被刪除（`podman system reset`、`podman network rm`），但 `hermes-network.service` 仍是 active。再執行一次 `scripts/install.sh`：它會重啟該單元與容器。以同樣方式消失的 volume 會以**空的**重建並發出警告，請用 `scripts/restore.sh` 還原。 |
 | Paseo 顯示 `INVALID_DASHBOARD_ORIGIN` 或 `ORIGIN_DENIED` | 見 [Paseo](#paseo)：公開網址必須是瀏覽器網址列的精確 Origin。 |
 | 容器開機時停止並顯示 `Invalid HERMES_PASEO_EXTRA_ORIGIN` | 修正 `hermes.env` 的值（scheme://host[:port]，不含路徑），再執行會先驗證它的 `scripts/install.sh`。 |
