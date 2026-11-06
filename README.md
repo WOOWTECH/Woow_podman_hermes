@@ -30,8 +30,8 @@ and after the gateway is healthy (`hermes-provision.service` → `/usr/local/bin
 
 The image and its provisioning follow the
 [Home Assistant add-on](https://github.com/WOOWTECH/Woow_ha_hermes_add_on) (Hermes v0.22.5): the same
-upstream base, patches and defaults, without what only exists there (Ingress, the Supervisor token
-boundary, Paseo). `container/patches/PROVENANCE` lists what was taken from it, with hashes.
+upstream base, patches, defaults and Paseo host adapter, without what only exists there (Ingress, the
+Supervisor token boundary). `container/patches/PROVENANCE` lists what was taken from it, with hashes.
 
 ## What gets installed
 
@@ -92,7 +92,8 @@ Edit `~/.config/hermes/hermes.env`, then run `scripts/install.sh` again.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | The URL the dashboard is opened from; MCP OAuth callbacks use it. Both lines must be identical. |
+| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | The exact origin the dashboard is opened from (behind a tunnel: its `https://` origin, no path). MCP OAuth callbacks go there and the Paseo plugin accepts browser requests only from it. Both lines must be identical. See [Public URL and HTTPS](#public-url-and-https). |
+| `HERMES_PASEO_EXTRA_ORIGIN` | empty | Optional second exact origin for Paseo, e.g. `http://127.0.0.1:19119` when the public URL is a tunnel. See [Paseo](#paseo). |
 | `MINIMAX_API_KEY` | empty | Required unless you install with `--no-llm`. |
 | `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `MCP_*` | empty | Optional provider and MCP keys. |
 | `WOOW_HERMES_BIND` | `127.0.0.1` | Address the three ports are published on; `all` covers IPv4 and IPv6. |
@@ -116,6 +117,65 @@ their value in `hermes.env` changed** since the last start, so a key edited in t
 across restarts (0.20.0 rewrote the file on every boot). An empty value in `hermes.env` leaves the
 file alone; delete a key in the dashboard. The secrets the unit manages are stripped from that file,
 because a copy there would override the podman secret.
+
+### Public URL and HTTPS
+
+Set `HERMES_DASHBOARD_PUBLIC_URL` (and `HERMES_BASE_URL`, same value) to the **origin the browser
+uses**. Behind a Cloudflare tunnel or another HTTPS reverse proxy that is its `https://` origin, for
+example `https://hermes.example.com`: scheme, host, a port only when it is not 443, no path, no
+trailing slash. `install.sh` refuses a public URL with credentials, a query or a fragment, and warns
+when it is plain `http` on a non-loopback host or not an exact origin (a path prefix works for OAuth
+but not for Paseo).
+
+The loopback dashboard keeps working when the public URL is an HTTPS origin (`tests/image-test.sh`
+P4): the dashboard binds `0.0.0.0` inside the container, so v0.22.5 accepts any `Host`; its cookies
+follow the scheme of each request, not the public URL; and the login has no Origin check. So
+`http://127.0.0.1:19119` (or `ssh -L`) and `https://hermes.example.com` both log in, as separate
+sessions. What the public URL does change: MCP OAuth callbacks always go to it, and the Paseo plugin
+only accepts it (plus `HERMES_PASEO_EXTRA_ORIGIN`). `localhost` and `127.0.0.1` are different origins.
+
+The dashboard's own login is then the only gate in front of the agent: anyone who can reach the tunnel
+can try the password. Keep `hermes-dashboard-password` long (the generated one is), and consider an
+access policy in front of the tunnel.
+
+### Paseo
+
+The image carries the Paseo host adapter from the HA add-on (`container/vendor/paseo`, the reviewed
+`host/` directory of [hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin)
+`0.1.4-rc.9`, hashes in `PROVENANCE.json`). It lets an enabled Paseo plugin reload the dashboard and
+stop its daemon before the plugin is disabled or removed. The plugin itself is **not** bundled: you
+install it from the dashboard, and nothing is installed or enabled by an upgrade.
+
+Requirements:
+
+- An HTTPS public URL for use from other machines (Paseo pairing and model logins open in the
+  browser). The adapter accepts `http` origins, as on Home Assistant's LAN, but a plain-http origin
+  on a non-loopback host gets a warning from `install.sh`.
+- Egress from the agent container to GitHub (the plugin source), the npm registry (the Paseo runtime,
+  downloaded on first use into `/opt/data`, about a minute) and the official Paseo relay and web app
+  (`app.paseo.sh`).
+- Node.js 22.19+ (the plugin's `engines`): the image's Node is v26.12.1, and the build checks it.
+
+Steps after `install.sh` (or `upgrade.sh`):
+
+1. Open the dashboard **from the public URL** (or from `HERMES_PASEO_EXTRA_ORIGIN`) and log in.
+2. **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-paseo-plugin`. Install the current release
+   (`0.1.4-rc.9`; when scripting the Plugins API, the ref must be the full commit SHA
+   `1101a5da63178e08bd0fdf849db8e2a5de4d6ef1`, not a tag) and enable it. The source is public; no
+   GitHub token is needed. Review the source and the permissions note before confirming the caution prompt.
+3. Open **Paseo**. The first start downloads the runtime; wait until the page says it is running.
+   Hermes v0.22.5 loads a new plugin's backend on first use, so **Reload dashboard** is only needed
+   when the page keeps saying the plugin API is not loaded.
+4. Generate the pairing link, **Open Paseo**, and **Connect** in the official app. The pairing link
+   grants access: do not post it anywhere. On a new device add a project first
+   (**Add project → New directory**, parent `/opt/data`).
+5. **New workspace**, pick the project, the Hermes provider, a logged-in model, then **Create**.
+
+Disable or remove the plugin from the dashboard's Plugins page (the adapter stops the Paseo daemon
+first), or `/paseo stop` before removing it from the CLI. State, pairing and conversations live in
+`/opt/data`. A `503 INVALID_DASHBOARD_ORIGIN` means the public URL (or the extra origin) is not an
+exact origin; `ORIGIN_DENIED` means the browser's origin is neither of them. Fix `hermes.env` and run
+`scripts/install.sh` again; never turn the origin check off.
 
 ## The image
 
@@ -147,10 +207,12 @@ RFC 9207 `iss` through its own dashboard OAuth flow, so the old `iss-callback.py
 patches are gone and the MCP SDK's issuer check is no longer relaxed: an OAuth server that returns a
 different issuer has to fix its metadata, and the integration has to be reconnected after that.
 
-`tests/image-test.sh [IMAGE]` boots the image twice without publishing a port — once on a fresh
-volume, once on a volume owned by uid 1000 as the compose stack left it — and checks s6, the
-dashboard, provisioning, the `.env` merge, that a login survives a restart, the approval gate and the
-scoped prompt GC. CI cannot build the image, so run it before a release.
+`tests/image-test.sh [IMAGE]` boots the image without publishing a port — on a fresh volume, on a
+volume owned by uid 1000 as the compose stack left it, and with an HTTPS public URL — and checks s6,
+the dashboard, provisioning, the `.env` merge, that a login survives a restart, the approval gate, the
+scoped prompt GC, and the Paseo adapter (privilege drop, origins, loopback and tunnel logins, the
+`INVALID_DASHBOARD_ORIGIN` answer). CI cannot build the image, so run it before a release. Set
+`IMAGE_TEST_PREFIX` so its container and volume names cannot collide with anything else on the host.
 
 ## Verify
 
@@ -335,6 +397,7 @@ keeping one value keeps a rollback to 0.20.0 working too.
 ```
 container/Containerfile            the image: slim (parity) and full targets
 container/patches/                 build-time patches shared with the HA add-on, and their PROVENANCE
+container/vendor/paseo/            the Paseo host adapter and hermes entry point (from the HA add-on)
 container/rootfs/                  in-image provisioning: cont-init hooks and /usr/local/bin/woow-provision
 container/fix-model-routes.py      idempotent model-route fix, run by woow-provision
 quadlet/                           units with @@VAR@@ tokens; quadlet/render-vars is the whitelist
@@ -358,6 +421,9 @@ tests/lint-repo.sh                 credential scan, image pin parity, no live-mu
 tests/provisioning-test.sh         fix-model-routes.py exit codes against real config shapes (CI)
 tests/rollback-model.sh            the rollback model, the writable-layer decision and the
                                    adoption proof, against tests/shims (CI)
+tests/resource-recreate.sh         a network/volume removed behind systemd's back is recreated (CI)
+tests/test-paseo-vendor.py         the Paseo adapter pins and packaging (CI)
+tests/test-paseo-origin.py         the extra Paseo origin validation, boot hook and install.sh (CI)
 tests/shims/                       podman and systemctl doubles; no container is ever created
 docs/odoo-posting.md               the Odoo cron notes that used to live in deploy/podman/SKILL.md
 docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of the migration
@@ -375,3 +441,6 @@ docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of 
 | The TUI looks stale after an upgrade | The TUI runs from the image (`/opt/hermes/ui-tui`), so a new image is a new TUI; reload the page. `/opt/data/.woow-image-version` shows which image last booted the volume. |
 | A tool that `deploy.sh` used to install is missing | Add it to `container/Containerfile` and rebuild. Nothing is installed into the running container any more, by design. |
 | Units gone after logout or reboot | `loginctl show-user $USER -p Linger` must say `yes`. |
+| `unable to find network with name or ID hermes` | The network was removed outside systemd (`podman system reset`, `podman network rm`) while `hermes-network.service` stayed active. Run `scripts/install.sh` again: it restarts that unit and the containers. A volume gone the same way is recreated **empty**, with a warning: restore it with `scripts/restore.sh`. |
+| Paseo says `INVALID_DASHBOARD_ORIGIN` or `ORIGIN_DENIED` | See [Paseo](#paseo): the public URL must be the exact origin in the browser's address bar. |
+| The container stops at boot with `Invalid HERMES_PASEO_EXTRA_ORIGIN` | Fix the value in `hermes.env` (scheme://host[:port], no path) and run `scripts/install.sh`, which validates it first. |

@@ -2,6 +2,67 @@
 
 All notable changes to the WoowTech Hermes Agent deployment package.
 
+## [0.22.0-quadlet] - 2026-11-06
+
+Phase 2 of the alignment with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`): the
+Paseo host adapter, the origin settings it needs, and a fix for a stack whose podman network was removed
+behind systemd's back. Same upstream base (Hermes v0.22.5); new image tag `v0.22.5-woow2`.
+
+### Security
+- **The Paseo plugin accepts browser requests only from exact, operator-declared origins.** The adapter
+  compares the request `Origin` with `HERMES_DASHBOARD_PUBLIC_URL` and, optionally, one more origin
+  (`HERMES_PASEO_EXTRA_ORIGIN`). A public URL that is unset or not an exact origin answers
+  `503 INVALID_DASHBOARD_ORIGIN` instead of guessing (adapter 0.1.4-rc.9, as in HA 0.1.14).
+  `install.sh` refuses an extra origin with a path, credentials, a wildcard or a non-http(s) scheme,
+  an extra origin next to a public URL that is not an exact origin, a public URL with credentials, a
+  query or a fragment, and `HERMES_PASEO_INGRESS_ORIGIN` set by hand; it never prints a rejected value.
+- **`/opt/data/.env` can no longer override the origins `hermes.env` declares.** `.env` wins over the
+  environment, so a `HERMES_DASHBOARD_PUBLIC_URL` written there (`hermes dashboard register` does) or
+  an empty `HERMES_PASEO_INGRESS_ORIGIN` would silently move the OAuth callback and the Paseo origin
+  check. `03-woow-dotenv` strips `HERMES_DASHBOARD_PUBLIC_URL`, `HERMES_BASE_URL` and `HERMES_PASEO_*`.
+- `podman exec hermes-agent hermes ...` still drops from root to the hermes user: the adapter's wrapper
+  replaces only the venv entry point that upstream's `/opt/hermes/bin/hermes` shim execs. The build
+  proves the shim and `libexec/hermes` are upstream's, and `tests/image-test.sh` P1 proves the drop.
+- The wrapper refuses to start the dashboard as root.
+
+### Added
+- **Paseo host adapter** (`container/vendor/paseo`, the reviewed `host/` directory of
+  `WOOWTECH/hermes-paseo-plugin` 0.1.4-rc.9 @ `1101a5d`, byte-identical to the HA add-on's copy):
+  `dashboard_control.py`, `profile_lifecycle.py`, `resource_limits.py` in
+  `/opt/hermes-paseo-dashboard-control/`, and the `hermes` wrapper as `/opt/hermes/.venv/bin/hermes`.
+  An enabled Paseo plugin can reload the supervised dashboard and stops its daemon before a native
+  disable or removal. The plugin itself is not bundled: install it from the dashboard's **Plugins**
+  page (README, *Paseo*). Paseo needs Node.js 22.19+ (the image has 26.12.1; the build checks it) and
+  egress to GitHub, npm and the Paseo relay on first use.
+- `HERMES_PASEO_EXTRA_ORIGIN` in `hermes.env`: an optional second exact origin, typically the loopback
+  `http://127.0.0.1:19119` when the public URL is an HTTPS tunnel. The boot hook
+  `cont-init.d/04-woow-paseo-origin` validates it with HA's `paseo_origin.py` and hands it to the
+  adapter as `HERMES_PASEO_INGRESS_ORIGIN`; a malformed value stops the boot, as on HA.
+- Tests: `tests/test-paseo-vendor.py`, `tests/test-paseo-origin.py` (ported from HA; the origin cases
+  also run through `install.sh`'s validator), `tests/resource-recreate.sh`, origin cases in
+  `tests/dryrun.local.sh`, Paseo anchors in `tests/patch-anchors.sh`, and `tests/image-test.sh` P1-P6
+  (privilege drop, adapter routes, accepted and refused origins, loopback and tunnel-shaped logins with
+  an HTTPS public URL, `INVALID_DASHBOARD_ORIGIN`, a boot stopped by a bad extra origin).
+
+### Fixed
+- **`install.sh` recreates a network or volume that was removed outside systemd.** After a
+  `podman system reset`-like event `hermes-network.service` stayed "active (exited)", `install.sh`
+  restarted only units whose files changed, and PostgreSQL and Redis failed with "unable to find
+  network with name or ID hermes". `install.sh` (and so `upgrade.sh`) now restarts any active
+  `-network`/`-volume` unit whose podman object is missing, and the three containers with it. A volume
+  recreated this way is empty, and `install.sh` says so loudly.
+
+### Documentation
+- README / README_zh-TW: *Public URL and HTTPS* (what an HTTPS public URL changes and what it does not:
+  the loopback dashboard keeps working, sessions are per origin) and *Paseo* (requirements, install and
+  enable steps, errors).
+
+### Upgrade
+`git pull && scripts/upgrade.sh`. It builds `v0.22.5-woow2` and keeps `v0.22.5-woow1` for a rollback;
+no data migration. `install.sh` warns that `hermes.env` lacks `HERMES_PASEO_EXTRA_ORIGIN`; add the
+line (empty is fine). To use Paseo through a tunnel, set `HERMES_DASHBOARD_PUBLIC_URL` and
+`HERMES_BASE_URL` to the tunnel's `https://` origin first.
+
 ## [0.21.0-quadlet] - 2026-11-06
 
 Hermes Agent **v0.22.5**, aligned with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`):

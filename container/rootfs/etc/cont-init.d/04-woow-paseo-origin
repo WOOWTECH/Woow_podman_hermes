@@ -1,0 +1,27 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# The optional second browser origin of the Paseo host adapter (container/vendor/paseo).
+#
+# The adapter accepts requests whose Origin is HERMES_DASHBOARD_PUBLIC_URL, plus at most one more
+# exact origin from HERMES_PASEO_INGRESS_ORIGIN. On Home Assistant that second origin is the Ingress
+# one (option paseo_ingress_url, converted by 00-woow-options); here it is HERMES_PASEO_EXTRA_ORIGIN
+# from ~/.config/hermes/hermes.env, typically the loopback URL (http://127.0.0.1:19119) when the
+# public URL is an HTTPS tunnel. The adapter refuses every Paseo request with 503
+# INVALID_DASHBOARD_ORIGIN when HERMES_PASEO_INGRESS_ORIGIN is present but empty or malformed, so it
+# is only ever written here, canonical, or not at all.
+#
+# A malformed value stops the boot, as on Home Assistant; scripts/install.sh refuses it before that.
+set -euo pipefail
+ENVDIR=/run/s6/container_environment
+
+if [[ -e $ENVDIR/HERMES_PASEO_INGRESS_ORIGIN ]]; then
+    [[ -z ${HERMES_PASEO_EXTRA_ORIGIN:-} ]] \
+        && echo "[woow-paseo] ignoring HERMES_PASEO_INGRESS_ORIGIN from the environment; set HERMES_PASEO_EXTRA_ORIGIN in hermes.env instead" >&2
+    rm -f "$ENVDIR/HERMES_PASEO_INGRESS_ORIGIN"
+fi
+if [[ -n ${HERMES_PASEO_EXTRA_ORIGIN:-} ]]; then
+    # paseo_origin.py never echoes a rejected value (it could carry credentials).
+    origin=$(printf '%s' "$HERMES_PASEO_EXTRA_ORIGIN" | python3 -I /opt/woow/paseo_origin.py)
+    printf '%s' "$origin" >"$ENVDIR/HERMES_PASEO_INGRESS_ORIGIN"
+    echo "[woow-paseo] extra Paseo origin: $origin"
+fi

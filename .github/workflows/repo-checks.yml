@@ -26,16 +26,26 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck -s bash container/rootfs/usr/local/bin/woow-provision container/rootfs/etc/cont-init.d/020-woow-provision \
-            container/rootfs/etc/cont-init.d/03-woow-dotenv
+            container/rootfs/etc/cont-init.d/03-woow-dotenv container/rootfs/etc/cont-init.d/04-woow-paseo-origin
 
       - name: python syntax of the image patches
-        run: python3 -m py_compile container/patches/*.py container/fix-model-routes.py
+        run: python3 -m py_compile container/patches/*.py container/fix-model-routes.py container/vendor/paseo/*.py container/rootfs/opt/woow/paseo_origin.py
 
       - name: In-image provisioning behaviour (fix-model-routes exit codes)
         run: tests/provisioning-test.sh
 
       - name: Build, unit and provisioning contract (no image)
         run: python3 tests/test-config-contract.py
+
+      - name: Paseo host adapter pins and packaging, origin validation (boot hook and install.sh agree)
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 tests/test-paseo-vendor.py
+          python3 tests/test-paseo-origin.py
+
+      - name: A network or volume removed behind systemd's back is recreated (shims, no podman)
+        run: tests/resource-recreate.sh
 
       # The image lanes (tests/image-test.sh, tests/run-scoped-prompt-gc-image.py) need the built
       # image and stay local; these two run the same patch against upstream excerpts.

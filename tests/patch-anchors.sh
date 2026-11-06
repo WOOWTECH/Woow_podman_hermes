@@ -6,11 +6,14 @@
 #   - the upstream contracts that replaced the dropped iss-callback / iss-permissive patches and the
 #     approval patch are still there (the same anchors upstream-contract.py and the Containerfile
 #     build proof rely on)
+#   - what the Paseo host adapter (container/vendor/paseo) hooks into: the dashboard's auth guard and
+#     plugin enable set, the s6 dashboard service it reloads, and the privilege-drop shim that execs
+#     the venv entry point the adapter's wrapper replaces
 # The build fails on the same drift; this only moves the failure earlier (and into CI).
 #
 #   tests/patch-anchors.sh [--tag v0.22.5]
 #
-# It downloads four files from the upstream repository, so it needs network access. Without network
+# It downloads seven files from the upstream repository, so it needs network access. Without network
 # it reports SKIP and exits 0: the build still fails loudly on a moved anchor.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -21,7 +24,8 @@ BASE=https://raw.githubusercontent.com/NousResearch/hermes-agent/$TAG
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-files=(hermes_state_sessions.py hermes_cli/web_routers/mcp.py tools/mcp_oauth.py tools/approval.py)
+files=(hermes_state_sessions.py hermes_cli/web_routers/mcp.py tools/mcp_oauth.py tools/approval.py
+  hermes_cli/web_server.py hermes_cli/plugins_cmd.py docker/hermes-exec-shim.sh docker/s6-rc.d/dashboard/run)
 for f in "${files[@]}"; do
   mkdir -p "$WORK/$(dirname "$f")"
   if ! curl -fsSL -m 30 -o "$WORK/$f" "$BASE/$f"; then
@@ -55,5 +59,9 @@ anchor hermes_cli/web_routers/mcp.py 'iss: Optional[str] = None' "the dashboard 
 anchor tools/mcp_oauth.py '_authorization_code_result(*await dashboard_flow.wait_for_callback())' "the MCP OAuth flow still hands iss to the SDK"
 anchor tools/approval.py 'def _presence(' "the approval gate still routes through _presence"
 anchor tools/approval.py '_NOTIFIER_BLIND_APPROVAL_PLATFORMS' "unattended platforms still get the deny path"
+anchor hermes_cli/web_server.py 'def _require_token(request: Request) -> None:' "the Paseo adapter's auth guard (web_server._require_token) is still there"
+anchor hermes_cli/plugins_cmd.py '_get_disabled_set = ' "the Paseo adapter's plugin enable/disable sets are still there"
+anchor docker/hermes-exec-shim.sh 'REAL=/opt/hermes/.venv/bin/hermes' "the privilege-drop shim still execs the venv entry point the Paseo wrapper replaces"
+anchor docker/s6-rc.d/dashboard/run 's6-setuidgid hermes hermes dashboard' "the dashboard still runs as an s6 service through the hermes entry point"
 
 ((fails == 0))

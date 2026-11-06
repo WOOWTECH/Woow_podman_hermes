@@ -1,8 +1,8 @@
 # Woow Hermes Agent image - replaces deploy.sh's in-container mutations with build steps.
 #
 #   podman build --format=docker --target slim \
-#     --build-arg WOOW_IMAGE_VERSION=v0.22.5-woow1 \
-#     -t localhost/woow-hermes-agent:v0.22.5-woow1 -f container/Containerfile container/
+#     --build-arg WOOW_IMAGE_VERSION=v0.22.5-woow2 \
+#     -t localhost/woow-hermes-agent:v0.22.5-woow2 -f container/Containerfile container/
 #
 # Targets
 #   slim (default)  upstream image + exactly what deploy.sh did to the running container. Parity with
@@ -15,8 +15,9 @@
 # download or a missing tool is caught here, not at 03:00 in production.
 #
 # The feature set follows the Home Assistant add-on (WOOWTECH/Woow_ha_hermes_add_on, hermes/Dockerfile),
-# minus what only exists there (nginx/ingress, the Supervisor token boundary, Paseo). The patches it
-# shares with that add-on are listed with their source hashes in patches/PROVENANCE.
+# minus what only exists there (nginx/ingress, the Supervisor token boundary). The patches and the
+# Paseo host adapter it shares with that add-on are listed with their source hashes in
+# patches/PROVENANCE and vendor/paseo/PROVENANCE.json.
 ARG HERMES_BASE=docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 FROM ${HERMES_BASE} AS slim
@@ -96,9 +97,32 @@ RUN git clone --filter=blob:none https://github.com/obra/superpowers.git /tmp/sp
 #   /usr/local/bin/woow-provision        post-start (hermes-provision.service): tools/plugins once,
 #                                        model routes, web/browser/webhook defaults
 #   /opt/woow/fix-model-routes.py        (was config/fix-model-routes.py, podman cp'd by step 9)
+#   /etc/cont-init.d/04-woow-paseo-origin boot: HERMES_PASEO_EXTRA_ORIGIN -> HERMES_PASEO_INGRESS_ORIGIN
 COPY rootfs/ /
 COPY fix-model-routes.py /opt/woow/fix-model-routes.py
-RUN chmod 0755 /etc/cont-init.d/020-woow-provision /etc/cont-init.d/03-woow-dotenv /usr/local/bin/woow-provision
+RUN chmod 0755 /etc/cont-init.d/020-woow-provision /etc/cont-init.d/03-woow-dotenv \
+               /etc/cont-init.d/04-woow-paseo-origin /usr/local/bin/woow-provision
+
+# The Paseo host adapter (vendor/paseo, reviewed source of WOOWTECH/hermes-paseo-plugin, as in the HA
+# add-on): the operator-owned `hermes` entry point installs dashboard_control into `hermes dashboard`
+# before the plugin is loaded, so an enabled Paseo plugin can reload the supervised dashboard and stop
+# its daemon before a native disable/removal. The plugin itself is installed by the user from the
+# dashboard's Plugins page; nothing here installs or enables it.
+#
+# Upstream's /opt/hermes/bin/hermes (the `podman exec ... hermes` privilege-drop shim, first on PATH)
+# is NOT replaced: it execs /opt/hermes/.venv/bin/hermes by absolute path, and that venv entry point
+# (upstream: a symlink to ../../libexec/hermes) is what the adapter's wrapper replaces. HA does the
+# same with `COPY ... /opt/hermes/.venv/bin/hermes`; COPY onto a symlink is builder-dependent
+# (it may write through to libexec/hermes), so the symlink is removed and the wrapper installed in
+# its place explicitly, and libexec/hermes stays upstream's.
+COPY --chmod=0555 vendor/paseo/dashboard_control.py vendor/paseo/profile_lifecycle.py vendor/paseo/resource_limits.py /opt/hermes-paseo-dashboard-control/
+COPY --chmod=0555 vendor/paseo/hermes /opt/woow/paseo-hermes-entrypoint
+RUN test -L /opt/hermes/.venv/bin/hermes \
+ && test "$(readlink -f /opt/hermes/.venv/bin/hermes)" = /opt/hermes/libexec/hermes \
+ && rm -f /opt/hermes/.venv/bin/hermes \
+ && install -o root -g root -m 0555 /opt/woow/paseo-hermes-entrypoint /opt/hermes/.venv/bin/hermes \
+ && rm -f /opt/woow/paseo-hermes-entrypoint \
+ && chmod 0755 /opt/woow/paseo_origin.py
 
 # The non-secret settings every deployment shares, baked in as HA does (the unit keeps only what is
 # per-deployment). S6_*: a failed cont-init stops the container instead of starting half-provisioned,
@@ -130,6 +154,23 @@ LABEL org.opencontainers.image.title="Woow Hermes Agent" \
 # the dropped patches relied on.
 RUN command -v tmux officecli agent-browser \
  && test -x /usr/local/bin/hermes \
+ && test ! -L /opt/hermes/.venv/bin/hermes \
+ && test "$(stat -c %u:%a /opt/hermes/.venv/bin/hermes)" = 0:555 \
+ && grep -q 'from dashboard_control import install' /opt/hermes/.venv/bin/hermes \
+ && grep -q 'Bundled interpreter missing' /opt/hermes/libexec/hermes \
+ && cmp /opt/hermes/bin/hermes /opt/hermes/docker/hermes-exec-shim.sh \
+ && grep -qx 'REAL=/opt/hermes/.venv/bin/hermes' /opt/hermes/bin/hermes \
+ && grep -qF 'exec "$S6_SUID" hermes "$REAL" "$@"' /opt/hermes/bin/hermes \
+ && test "$(PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/bin:/bin command -v hermes)" = /opt/hermes/bin/hermes \
+ && /bin/sh -n /opt/hermes/.venv/bin/hermes \
+ && mkdir -m 1777 -p /tmp/woow-proof \
+ && test "$(env HOME=/tmp/woow-proof /opt/hermes/.venv/bin/hermes dashboard 2>&1 >/dev/null)" = 'Start Dashboard as the Hermes service account.' \
+ && env HOME=/tmp/woow-proof HERMES_HOME=/tmp/woow-proof/data /command/s6-setuidgid hermes /opt/hermes/bin/hermes --version >/dev/null \
+ && env HOME=/tmp/woow-proof HERMES_HOME=/tmp/woow-proof/data /opt/hermes/.venv/bin/python -I -c 'import sys; sys.path[:0] = ["/opt/hermes", "/opt/hermes-paseo-dashboard-control"]; import dashboard_control, profile_lifecycle, resource_limits; from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set' \
+ && rm -rf /tmp/woow-proof \
+ && test -x /opt/woow/paseo_origin.py && test -x /etc/cont-init.d/04-woow-paseo-origin \
+ && test "$(printf 'https://hermes.example.com/' | python3 -I /opt/woow/paseo_origin.py)" = https://hermes.example.com \
+ && node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=19)?0:1)' \
  && /opt/hermes/.venv/bin/python3 -c 'from ddgs import DDGS' \
  && test ! -e /usr/local/bin/helm && test ! -e /usr/local/bin/argocd \
  && grep -q 'iss: Optional\[str\] = None' /opt/hermes/hermes_cli/web_routers/mcp.py \

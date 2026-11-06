@@ -45,8 +45,11 @@ for key in MINIMAX_API_KEY OPENROUTER_API_KEY GITHUB_TOKEN; do
 done
 
 # .env wins over the environment, so a stale copy of a secret the unit manages (podman secrets) there
-# would silently override it.
-grep -Ev '^(API_SERVER_KEY|WEBHOOK_SECRET|HERMES_DASHBOARD_BASIC_AUTH_[A-Z_]*)=' "$tmp" >"$tmp.n" || true
+# would silently override it. The same goes for the origins hermes.env declares: a
+# HERMES_DASHBOARD_PUBLIC_URL left there by `hermes dashboard register`, or an empty
+# HERMES_PASEO_INGRESS_ORIGIN, would move the OAuth callback and the Paseo origin check away from what
+# hermes.env says (Podman only; see container/patches/PROVENANCE).
+grep -Ev '^(API_SERVER_KEY|WEBHOOK_SECRET|HERMES_DASHBOARD_BASIC_AUTH_[A-Z_]*|HERMES_DASHBOARD_PUBLIC_URL|HERMES_BASE_URL|HERMES_PASEO_[A-Z_]*)=' "$tmp" >"$tmp.n" || true
 mv -f "$tmp.n" "$tmp"
 
 if [[ -f $ENVF ]] && cmp -s "$tmp" "$ENVF"; then
