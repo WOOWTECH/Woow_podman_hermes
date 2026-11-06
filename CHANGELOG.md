@@ -2,6 +2,70 @@
 
 All notable changes to the WoowTech Hermes Agent deployment package.
 
+## [0.23.0-quadlet] - 2026-11-06
+
+Phase 3 of the alignment with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`): the
+optional Omnigent plugin, an OpenAI-compatible gateway (LiteLLM) as a provider with its models listed
+in ACP/Paseo, and `upgrade.sh`/`install.sh` fixes. Same upstream base (Hermes v0.22.5); new image tag
+`v0.22.5-woow3` (one line in `03-woow-dotenv`).
+
+### Security
+- **Omnigent grants shell-equivalent access, and the docs say so first.** README *Omnigent* (both
+  languages) carries HA's warnings: every Omnigent server account that can use the host can run Hermes
+  as the container's `hermes` user with its files (provider keys, config, sessions, the Omnigent login
+  token) and network; pair with a dedicated non-admin account; unlinking does not revoke the grant on
+  the server; backups of `hermes-data` include the login token and the host identity.
+- **No Podman security option is relaxed for Omnigent.** Measured on this stack: the plugin's
+  Bubblewrap probe passes in rootless Podman, but Omnigent's own sandbox (a fresh `/proc` in a new PID
+  namespace) fails with `Can't mount proc on /proc` unless `--security-opt unmask=/proc/*` (or
+  `unmask=ALL` / `systempaths=unconfined`) unmasks `/proc` for the whole container; `seccomp=unconfined`
+  and `label=disable` do not help. Hermes 0.22 Omnigent conversations fail without direct execution
+  whether or not Bubblewrap works (`profile_mismatch`), so the unmask buys nothing and is not offered.
+  Hermes conversations use the plugin's direct-execution mode with the container as the sandbox
+  (rootless, memory/CPU limits, no host mount but `hermes-data`; not a network boundary), as
+  Woow_podman_opendesign 4.1.2 does for Codex.
+- `scripts/omnigent.sh pair` needs `--allow-direct-hermes` and a typed `direct` (or `--yes`), reads the
+  password without echo (or `--password-stdin`) and hands it to the plugin on stdin: never an argument,
+  never printed, never stored by the script. Only codes and the verification summary are printed.
+- `LITELLM_API_KEY` joins the provider keys allowed in `hermes.env` (`ENV_CREDENTIAL_ALLOW`); like the
+  others it cannot be passed with `--set`.
+
+### Added
+- **Omnigent, optional** (`WOOWTECH/hermes-omnigent-plugin` `0.1.0-rc.16` @ `6c86ebb`, Omnigent 0.20.0),
+  installed by the user from the dashboard as on HA; nothing is bundled. `scripts/omnigent.sh`:
+  `pair` (direct execution; the pairing panel does not show that checkbox here because the probe
+  passes), and `status`, `catalog`, `verify [--model]`, `acceptance [--chat]`, `disconnect` through the
+  plugin's own CLI, all as the `hermes` user inside the container. README: requirements (0.6–0.7 GB,
+  egress, tmux 3.5a), install, pairing, removal and the test scope.
+- **OpenAI-compatible gateway such as LiteLLM** (README): a `providers:` entry with `key_env`, a
+  `models:` list and `discover_models: false`, plus `model.provider: custom:<name>`, makes ACP (and so
+  Paseo's model picker and Omnigent's catalog) list exactly the declared models; the `hermes config set`
+  commands are documented. No new env knob: the HA add-on has no equivalent and plain config does it.
+- `LITELLM_API_KEY` in `hermes.env`; `03-woow-dotenv` copies it into `/opt/data/.env` like the other
+  provider keys. The gateway reads `key_env` from its environment, but Omnigent's direct-execution
+  sessions start their own gateway from a scrubbed environment and see only `/opt/data/.env`
+  (without the copy their first call answered 401).
+- `scripts/upgrade.sh --no-llm`, `--set KEY=VALUE` (repeatable) and `--rebuild`, passed to `install.sh`.
+  A host whose provider is set up in the dashboard could install with `--no-llm` but not upgrade.
+- Tests: `tests/install-flags.sh` (CI, shims): upgrade's pass-through, the provider-key check, and the
+  `--set` warning on a real `install.sh` run; `tests/image-test.sh` B3 checks the LiteLLM key copy.
+
+### Changed
+- `install.sh` no longer requires `MINIMAX_API_KEY` specifically: any of `MINIMAX_API_KEY`,
+  `OPENROUTER_API_KEY` or `LITELLM_API_KEY` will do, and the error names `--no-llm` (also for
+  `upgrade.sh`) and the dashboard/`config.yaml` alternative.
+
+### Fixed
+- **`install.sh --set` no longer warns that `hermes.env` lacks the key it is setting** (ported from
+  Woow_podman_opendesign 4.2.1): an existing file gets the `--set` values before the missing-keys check,
+  and a key that is still missing is still reported.
+
+### Upgrade
+`git pull && scripts/upgrade.sh` (add `--no-llm` if `hermes.env` has no provider key). It builds
+`v0.22.5-woow3` and keeps `v0.22.5-woow2` for a rollback; no data migration. `install.sh` warns that
+`hermes.env` lacks `LITELLM_API_KEY`; add the line (empty is fine). Omnigent and the LiteLLM provider
+are opt-in: see the README.
+
 ## [0.22.0-quadlet] - 2026-11-06
 
 Phase 2 of the alignment with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`): the

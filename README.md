@@ -68,7 +68,7 @@ Supervisor token boundary). `container/patches/PROVENANCE` lists what was taken 
 git clone https://github.com/WOOWTECH/Woow_podman_hermes.git
 cd Woow_podman_hermes
 scripts/install.sh                     # first run: creates ~/.config/hermes/hermes.env and stops for review
-nano ~/.config/hermes/hermes.env       # MINIMAX_API_KEY and the public dashboard URL
+nano ~/.config/hermes/hermes.env       # a provider key (or use --no-llm) and the public dashboard URL
 scripts/install.sh                     # build the image, render, validate, start, provision, smoke
 ```
 
@@ -77,7 +77,7 @@ that takes 5-15 minutes. `WOOW_HERMES_BUILD_CPUS` (plus `nice`) keeps it from st
 
 | Option | Effect |
 |---|---|
-| `--no-llm` | Install without a provider key (platform checks only). |
+| `--no-llm` | Install without a provider key in `hermes.env` (platform only, or the provider is configured in the dashboard / `config.yaml`). |
 | `--accept-defaults` | On the first run, keep going with the example settings. |
 | `--set KEY=VALUE` | Store a setting first (repeatable), e.g. `--set WOOW_HERMES_MEMORY=3g`. |
 | `--no-build` / `--rebuild` | Skip the build (the tag must exist) / rebuild it (the old image is kept as `<tag>-prev`). |
@@ -94,8 +94,8 @@ Edit `~/.config/hermes/hermes.env`, then run `scripts/install.sh` again.
 |---|---|---|
 | `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | The exact origin the dashboard is opened from (behind a tunnel: its `https://` origin, no path). MCP OAuth callbacks go there and the Paseo plugin accepts browser requests only from it. Both lines must be identical. See [Public URL and HTTPS](#public-url-and-https). |
 | `HERMES_PASEO_EXTRA_ORIGIN` | empty | Optional second exact origin for Paseo, e.g. `http://127.0.0.1:19119` when the public URL is a tunnel. See [Paseo](#paseo). |
-| `MINIMAX_API_KEY` | empty | Required unless you install with `--no-llm`. |
-| `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `MCP_*` | empty | Optional provider and MCP keys. |
+| `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_API_KEY` | empty | Provider keys. `install.sh` wants at least one of them, unless you run it (or `upgrade.sh`) with `--no-llm` because the provider is configured in the dashboard or `config.yaml`. `LITELLM_API_KEY` is the key of an [OpenAI-compatible gateway](#openai-compatible-gateway-such-as-litellm). |
+| `GITHUB_TOKEN`, `MCP_*` | empty | Optional GitHub and MCP keys. |
 | `WOOW_HERMES_BIND` | `127.0.0.1` | Address the three ports are published on; `all` covers IPv4 and IPv6. |
 | `WOOW_HERMES_PORT_GATEWAY` / `_DASHBOARD` / `_WEBHOOK` | `18642` / `19119` / `18644` | Host ports. |
 | `WOOW_HERMES_MEMORY` / `WOOW_HERMES_CPUS` | `6g` / `3` | Limits for the agent container. |
@@ -112,11 +112,68 @@ podman secret inspect --showsecret --format '{{.SecretData}}' hermes-api-server-
 
 Hermes itself copies the provider keys into the data volume (`/opt/data/.env`, 0600, and OpenRouter
 into the model routes in `config.yaml`). That is how the dashboard TUI reads them. The boot hook
-`03-woow-dotenv` writes `MINIMAX_API_KEY`, `OPENROUTER_API_KEY` and `GITHUB_TOKEN` there **only when
+`03-woow-dotenv` writes `MINIMAX_API_KEY`, `OPENROUTER_API_KEY`, `LITELLM_API_KEY` and `GITHUB_TOKEN` there **only when
 their value in `hermes.env` changed** since the last start, so a key edited in the dashboard is kept
 across restarts (0.20.0 rewrote the file on every boot). An empty value in `hermes.env` leaves the
 file alone; delete a key in the dashboard. The secrets the unit manages are stripped from that file,
 because a copy there would override the podman secret.
+
+### OpenAI-compatible gateway such as LiteLLM
+
+Hermes can use any OpenAI-compatible endpoint (LiteLLM, vLLM, a company gateway) as a named provider.
+Declared this way, **every model you list appears in the dashboard, in ACP clients and in Paseo's
+model picker**, and in Omnigent's model list; a bare `model.base_url` shows only the current model.
+
+1. Put the key into `hermes.env` and apply it (a new environment value needs a container restart,
+   which `install.sh` does when the file changed):
+
+   ```bash
+   # ~/.config/hermes/hermes.env
+   LITELLM_API_KEY=sk-...
+   ```
+   ```bash
+   scripts/install.sh            # or scripts/upgrade.sh; add --no-llm if this is your only provider
+   ```
+
+2. Declare the provider and its models (`config.yaml` in the data volume; no restart needed, the next
+   session and the running gateway pick it up):
+
+   ```bash
+   podman exec hermes-agent hermes config set providers.litellm.name LiteLLM
+   podman exec hermes-agent hermes config set providers.litellm.base_url https://litellm.example.com/v1
+   podman exec hermes-agent hermes config set providers.litellm.key_env LITELLM_API_KEY
+   podman exec hermes-agent hermes config set providers.litellm.models '["deepseek/deepseek-v4.1-flash","z-ai/glm-5.3-flash"]'
+   podman exec hermes-agent hermes config set providers.litellm.discover_models false
+   podman exec hermes-agent hermes config set model.provider custom:litellm
+   podman exec hermes-agent hermes config set model.default deepseek/deepseek-v4.1-flash
+   ```
+
+   which is this in `config.yaml`:
+
+   ```yaml
+   model:
+     provider: custom:litellm
+     default: deepseek/deepseek-v4.1-flash
+   providers:
+     litellm:
+       name: LiteLLM
+       base_url: https://litellm.example.com/v1
+       key_env: LITELLM_API_KEY
+       models: [deepseek/deepseek-v4.1-flash, z-ai/glm-5.3-flash]
+       discover_models: false
+   ```
+
+- The base URL ends in `/v1`. `key_env` names the variable; the key itself never goes into
+  `config.yaml`.
+- `discover_models: false` keeps the list to the models you declared. Without it Hermes also asks the
+  gateway's `/models` and lists **everything** the key can use (85 models on the gateway this was
+  tested against), with your declared ones first.
+- ACP and Paseo show the models as `custom:litellm:<model>` (display name: the bare model id). The
+  current one comes from `model.provider` + `model.default`; switching in Paseo or ACP uses the
+  prefixed id. Run `hermes config unset model.base_url` if an old OpenRouter `base_url` is still there.
+- Tested on `v0.22.5-woow3` against a LiteLLM gateway: ACP `session/new` listed exactly the two models,
+  and a prompt through each answered (`stopReason: end_turn`); Omnigent's catalog listed the same two
+  and verified a conversation with each.
 
 ### Public URL and HTTPS
 
@@ -177,6 +234,77 @@ first), or `/paseo stop` before removing it from the CLI. State, pairing and con
 exact origin; `ORIGIN_DENIED` means the browser's origin is neither of them. Fix `hermes.env` and run
 `scripts/install.sh` again; never turn the origin check off.
 
+### Omnigent
+
+The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.16`, Omnigent
+`0.20.0`) connects this Hermes to an Omnigent server, so Omnigent conversations can run on this host.
+As on Home Assistant it is **optional**: not bundled, not installed or enabled by an upgrade.
+
+> **Security.** Every account that can use this host on the Omnigent server gets **the equivalent of a
+> shell in the agent container**: Hermes runs those conversations as the container's `hermes` user,
+> with its files (`/opt/data`: provider keys in `.env`, `config.yaml`, sessions, the Omnigent login
+> token) and its network. Pair with a **dedicated, non-admin** Omnigent account used only for this
+> host, and decide who on the server may use it. **Unlinking does not revoke the grant on the
+> server**: it clears the local login, and the host's registration and history stay there (offline). Backups of
+> `hermes-data` include the plugin's private runtime (about 0.6 GB), the Omnigent login token and the
+> host identity: keep them as secrets.
+
+What it needs, measured on this stack:
+
+- About **0.6–0.7 GB** in `/opt/data/omnigent-plugin` (a private uv, Python 3.12 and Omnigent 0.20.0;
+  25–35 s to install). Egress to GitHub (plugin source), PyPI (Omnigent), `deb.debian.org`
+  (Bubblewrap, unpacked into the plugin directory) and the Omnigent server.
+- tmux ≥ 3.3: the image has 3.5a.
+- **Direct execution.** Hermes 0.22 conversations started by Omnigent work only with the plugin's
+  *allow Hermes direct execution* consent (`sandbox=none`), as on Home Assistant. Without it the
+  conversation's Hermes cannot reach a gateway and the plugin reports `REQUIRED_TERMINAL_EXITED`
+  (`Gateway inaccessible: profile_mismatch`), with or without a working Bubblewrap. The container is
+  the sandbox, as in Woow_podman_opendesign: rootless (container root is an unprivileged host uid),
+  memory and CPU limits, no host mount but the `hermes-data` volume. It is not a network boundary:
+  conversations have the container's egress and can reach `hermes-postgresql` and `hermes-redis` on
+  the `hermes` network.
+- **No Podman security option.** Bubblewrap in rootless Podman can create the user namespace the
+  plugin's probe checks, so the pairing panel does **not** stop at `SANDBOX_NAMESPACE_UNAVAILABLE` and
+  does not show the direct-execution checkbox. Omnigent's own Bubblewrap sandbox (a fresh `/proc` in
+  a new PID namespace) fails here with `Can't mount proc on /proc: Operation not permitted` because
+  Podman masks parts of `/proc`; only `--security-opt unmask=/proc/*` (or `unmask=ALL` /
+  `systempaths=unconfined`) fixes that, for every process in the container. It would not help Hermes
+  (see above), so the stack does not set it.
+
+Install and pair:
+
+1. Configure a working model first (for example the [LiteLLM recipe](#openai-compatible-gateway-such-as-litellm)).
+   The key must be in `hermes.env` (or entered in the dashboard): Omnigent's conversations read
+   `/opt/data/.env`, not the container environment.
+2. Dashboard → **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-omnigent-plugin`, install and
+   enable. Hermes warns `custom (unreviewed) source`, the usual note for anything outside its
+   catalog; if the page also shows a caution about running processes, review it as for Paseo. Pinned
+   from the CLI (full commit SHA, not a tag):
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 6c86ebb4455083d50e3fed9f6d6a25c2dff56e9e --enable`
+   (on 2026-11-06 this CLI install printed nothing beyond that note, so `--force` was not needed).
+3. Pair from the host, because the panel has no direct-execution checkbox here:
+
+   ```bash
+   scripts/omnigent.sh pair --server https://omnigent.example.com --user hermes-host-1 --allow-direct-hermes
+   ```
+
+   It repeats the warning above, asks you to type `direct`, reads the password without echo and hands
+   it to the plugin on stdin. The plugin installs its runtime, connects, and answers only when a real
+   Hermes conversation replied (`"reply": "OMNIGENT_CONNECTION_OK"`).
+4. `scripts/omnigent.sh status`, `catalog` (the Hermes models Omnigent will offer), `verify [--model ID]`,
+   `acceptance --chat`. The pairing survives a restart of `hermes-agent` (the host reconnects in
+   about 20 s). A new login, or disabling and re-enabling the plugin, needs `pair` again.
+
+Remove: `scripts/omnigent.sh disconnect` (or **Unlink** in the plugin's settings), then remove the
+plugin on the Plugins page. Removal keeps `/opt/data/omnigent-plugin`; restart `hermes-agent`, then
+delete that directory (`podman exec -u hermes hermes-agent rm -rf /opt/data/omnigent-plugin`).
+
+Tested on 2026-11-06 with `v0.22.5-woow3` against a local Omnigent 0.20.0 server (accounts auth) and
+LiteLLM: install, pairing, `catalog` with both models, `verify` with each, `acceptance --chat`, a
+restart, unlink. Not tested: the browser panels (Plugins page, pairing panel), a remote HTTPS Omnigent
+server, Claude Code / Codex / Pi engines (not in the image), Paseo's own model picker (the ACP list it
+is fed from was tested).
+
 ## The image
 
 `container/Containerfile` has two targets:
@@ -230,10 +358,12 @@ The dashboard is at `http://127.0.0.1:19119/` (user `admin`); from elsewhere use
 
 ```bash
 git pull
-scripts/upgrade.sh
+scripts/upgrade.sh                       # [--no-llm] [--set KEY=VALUE]... [--rebuild] [--no-backup]
 ```
 
-Backup, unit snapshot, build, `install.sh`, smoke. On failure the previous units come back, and with
+Backup, unit snapshot, build, `install.sh`, smoke. `--no-llm`, `--set` and `--rebuild` are passed to
+`install.sh`: use `--no-llm` when `hermes.env` has no provider key because the provider is set up in
+the dashboard or `config.yaml`. On failure the previous units come back, and with
 them the previous image tag. The agent migrates its SQLite schema forward, so a rollback across a
 schema change also needs `scripts/restore.sh` with the pre-upgrade archive.
 
@@ -405,7 +535,7 @@ systemd/hermes-provision.service   the oneshot that runs woow-provision after th
 config/hermes.env.example          template for ~/.config/hermes/hermes.env
 config/golden-config.yaml          reference config (not applied automatically)
 scripts/                           build-image, install, upgrade, uninstall, backup, restore,
-                                   migrate-legacy
+                                   migrate-legacy, omnigent (the optional Omnigent plugin)
 scripts/legacy-common.sh           the rename-vs-capture rollback helpers, the writable-layer
                                    decision and the volume adoption proof
 scripts/lib/                       vendored quadlet-lib (do not edit; CI checks its hash)
@@ -422,6 +552,7 @@ tests/provisioning-test.sh         fix-model-routes.py exit codes against real c
 tests/rollback-model.sh            the rollback model, the writable-layer decision and the
                                    adoption proof, against tests/shims (CI)
 tests/resource-recreate.sh         a network/volume removed behind systemd's back is recreated (CI)
+tests/install-flags.sh             upgrade.sh's install flags, the provider-key check, --set warnings (CI)
 tests/test-paseo-vendor.py         the Paseo adapter pins and packaging (CI)
 tests/test-paseo-origin.py         the extra Paseo origin validation, boot hook and install.sh (CI)
 tests/shims/                       podman and systemctl doubles; no container is ever created
@@ -441,6 +572,9 @@ docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of 
 | The TUI looks stale after an upgrade | The TUI runs from the image (`/opt/hermes/ui-tui`), so a new image is a new TUI; reload the page. `/opt/data/.woow-image-version` shows which image last booted the volume. |
 | A tool that `deploy.sh` used to install is missing | Add it to `container/Containerfile` and rebuild. Nothing is installed into the running container any more, by design. |
 | Units gone after logout or reboot | `loginctl show-user $USER -p Linger` must say `yes`. |
+| `install.sh` or `upgrade.sh` stops with "no LLM provider key" | Put a key into `hermes.env`, or pass `--no-llm` when the provider is configured in the dashboard or `config.yaml`. |
+| Omnigent reports `REQUIRED_TERMINAL_EXITED` (`profile_mismatch`) | The pairing was made without direct execution: run `scripts/omnigent.sh pair ... --allow-direct-hermes` ([Omnigent](#omnigent)). |
+| Omnigent's Hermes answers 401 / "no API key" while the dashboard works | The key is only in the container environment. Put it into `hermes.env` (`03-woow-dotenv` copies it to `/opt/data/.env`) and restart. |
 | `unable to find network with name or ID hermes` | The network was removed outside systemd (`podman system reset`, `podman network rm`) while `hermes-network.service` stayed active. Run `scripts/install.sh` again: it restarts that unit and the containers. A volume gone the same way is recreated **empty**, with a warning: restore it with `scripts/restore.sh`. |
 | Paseo says `INVALID_DASHBOARD_ORIGIN` or `ORIGIN_DENIED` | See [Paseo](#paseo): the public URL must be the exact origin in the browser's address bar. |
 | The container stops at boot with `Invalid HERMES_PASEO_EXTRA_ORIGIN` | Fix the value in `hermes.env` (scheme://host[:port], no path) and run `scripts/install.sh`, which validates it first. |
