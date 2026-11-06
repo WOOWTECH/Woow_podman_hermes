@@ -43,3 +43,37 @@ _hermes_provision_done() {
 hermes_wait_provision() {
   ql_wait_until "$1" "hermes-provision.service to finish" _hermes_provision_done
 }
+
+# hermes_ensure_resources <rendered-dir>: a network or volume oneshot unit that is still "active
+# (exited)" although its podman object is gone is restarted, together with the three containers.
+# Quadlet's -network/-volume services are RemainAfterExit oneshots: when the objects are removed
+# behind systemd's back (`podman system reset`, `podman network rm`, a storage wipe) the unit stays
+# active, ql_apply_units only restarts units whose files changed, and the containers then fail with
+# "unable to find network with name or ID hermes". A unit that is not active needs nothing: starting
+# a container pulls it in and it creates the object.
+hermes_ensure_resources() {
+  local out=$1 f kind name unit missing=()
+  for f in "$out"/*.network "$out"/*.volume; do
+    [[ -f $f ]] || continue
+    case $f in
+      *.network) kind=network name=$(sed -n 's/^NetworkName=//p' "$f") ;;
+      *) kind=volume name=$(sed -n 's/^VolumeName=//p' "$f") ;;
+    esac
+    [[ -n $name ]] || continue
+    unit=$(ql_unit_for "$f")
+    [[ $(systemctl --user is-active "$unit" 2>/dev/null || true) == active ]] || continue
+    podman "$kind" exists "$name" && continue
+    if [[ $kind == volume ]]; then
+      ql_warn "podman volume $name is gone although $unit is active; it is recreated EMPTY. If it held data, stop now and use scripts/restore.sh"
+    else
+      ql_warn "podman network $name is gone although $unit is active; recreating it"
+    fi
+    missing+=("$unit")
+  done
+  ((${#missing[@]})) || return 0
+  if [[ ${QL_DRY_RUN:-0} == 1 ]]; then
+    ql_info "[dry-run] would restart ${missing[*]} and the hermes containers"
+    return 0
+  fi
+  ql_mark_changed "$APP" "${missing[@]}" hermes-postgres.service hermes-redis.service hermes-agent.service
+}

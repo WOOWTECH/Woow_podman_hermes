@@ -123,6 +123,8 @@ changed=$(ql_install_files "$WORK/out" "$APP" --prune)
 restart_agent=0
 app_env_changed && restart_agent=1
 ((rotate == 0)) || restart_agent=1
+# A network or volume removed outside systemd leaves its oneshot unit active: restart it explicitly.
+hermes_ensure_resources "$WORK/out"
 if [[ $dry == 1 ]]; then
   ((restart_agent)) && ql_info "[dry-run] would restart hermes-agent.service (the settings changed)"
   ql_info "dry-run complete; nothing was changed"
