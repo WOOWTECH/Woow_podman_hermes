@@ -20,6 +20,18 @@ run() { # run <config file> -> sets OUT and RC
   OUT=$(python3 "$SCRIPT" "$1" 2>&1); RC=$?
 }
 
+# 0. woow-provision waits for the gateway before it drops to the hermes user. hermes-provision.service
+#    starts with the container, before stage2's UID remap: a drop that early stays uid 10000 and
+#    cannot enter /opt/data. image-test B2 runs the real race; this keeps the order without an image.
+PROV=$REPO/container/rootfs/usr/local/bin/woow-provision
+wait_line=$(grep -n 'curl -fsS -o /dev/null http://127.0.0.1:8642/health &&' "$PROV" | head -1 | cut -d: -f1)
+drop_line=$(grep -n 's6-setuidgid hermes' "$PROV" | grep -v '^[0-9]*:#' | head -1 | cut -d: -f1)
+if [[ -n $wait_line && -n $drop_line ]] && ((wait_line < drop_line)); then
+  pass "woow-provision waits for the gateway before it drops privileges"
+else
+  fail "woow-provision drops privileges before the gateway is up (wait line '$wait_line', drop line '$drop_line')"
+fi
+
 # 1. The state of every gateway that has not been given a provider, and of every config.yaml
 #    adopted from the compose deployment: no model_routes section at all. Nothing to add is not a
 #    failure - a non-zero exit here failed hermes-provision.service on the toypark1234 rehearsal

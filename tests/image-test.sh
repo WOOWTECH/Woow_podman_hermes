@@ -49,8 +49,8 @@ check() { if "${@:2}"; then pass "$1"; else fail "$1"; fi; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/hermes-image-test.XXXXXX")
 chmod 700 "$T"
 cleanup() {
-  podman rm -f -t 10 "$PFX-1" "$PFX-2" "$PFX-3" "$PFX-4" >/dev/null 2>&1 || true
-  podman volume rm -f "$PFX-data" "$PFX-data-uid1000" "$PFX-data-paseo" >/dev/null 2>&1 || true
+  podman rm -f -t 10 "$PFX-race" "$PFX-1" "$PFX-2" "$PFX-3" "$PFX-4" >/dev/null 2>&1 || true
+  podman volume rm -f "$PFX-data-race" "$PFX-data" "$PFX-data-uid1000" "$PFX-data-paseo" >/dev/null 2>&1 || true
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -100,8 +100,19 @@ in_c() { podman exec "$C" sh -c "$1" 2>/dev/null; }
 cfg() { podman exec -u hermes "$C" /opt/hermes/.venv/bin/hermes config get "$1" 2>&1; }
 envkey() { in_c "sed -n 's/^$1=//p' /opt/data/.env"; }
 
-# ---- B1 ------------------------------------------------------------------------------------------
+# ---- B2 race -------------------------------------------------------------------------------------
+# What hermes-provision.service does: exec woow-provision the moment the container starts, before
+# stage2 has remapped the hermes user. Dropping privileges that early failed the unit.
 write_env "imagetest-minimax-1"
+podman volume create "$PFX-data-race" >/dev/null
+C=$PFX-race
+podman run -d --name "$C" --env-file "$T/env" --memory=4g --shm-size=1g \
+  -v "$PFX-data-race:/opt/data" "$IMAGE" gateway run >/dev/null
+check "B2 woow-provision exits 0 when it starts with the container" podman exec "$C" /usr/local/bin/woow-provision --wait 300
+podman rm -f -t 10 "$C" >/dev/null 2>&1
+podman volume rm -f "$PFX-data-race" >/dev/null 2>&1
+
+# ---- B1 ------------------------------------------------------------------------------------------
 podman volume create "$PFX-data" >/dev/null
 C=$PFX-1
 check "B1 the container boots on a fresh volume (gateway /health and dashboard /login answer)" start "$C" "$PFX-data"

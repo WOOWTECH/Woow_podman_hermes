@@ -5,9 +5,6 @@
 # Home Assistant add-on writes from its s6 woow-provision service (container/patches/PROVENANCE).
 # Needs the gateway up: `hermes tools`/`plugins`/`config` act on the live HERMES_HOME.
 set -euo pipefail
-# `podman exec` runs as container root. deploy.sh edited config.yaml with `sed -i` as root, which
-# replaces the file and leaves it root-owned; run everything as the hermes user instead.
-if [[ $(id -u) -eq 0 ]]; then exec /command/s6-setuidgid hermes "$0" "$@"; fi
 DATA=/opt/data
 CFG="$DATA/config.yaml"
 POLICY_STAMP="$DATA/.woow-policy-v1"
@@ -15,11 +12,18 @@ wait_s=0
 [[ ${1:-} == --wait ]] && wait_s=${2:-300}
 hermes_cli() { /opt/hermes/.venv/bin/hermes "$@"; }
 
+# Wait before dropping to the hermes user: hermes-provision.service execs this the moment the
+# container starts, when stage2 may not have remapped hermes to HERMES_UID yet. A drop that early
+# stays uid 10000 for the whole run and cannot enter /opt/data (0700, uid 1000), which then reads as
+# "config.yaml missing". A healthy gateway means stage2 has finished.
 for ((i = 0; i < wait_s; i += 5)); do
   curl -fsS -o /dev/null http://127.0.0.1:8642/health && break
   sleep 5
 done
 curl -fsS -o /dev/null http://127.0.0.1:8642/health || { echo "gateway not healthy after ${wait_s}s" >&2; exit 1; }
+# `podman exec` runs as container root. deploy.sh edited config.yaml with `sed -i` as root, which
+# replaces the file and leaves it root-owned; run everything as the hermes user instead.
+if [[ $(id -u) -eq 0 ]]; then exec /command/s6-setuidgid hermes "$0" "$@"; fi
 [[ -f $CFG ]] || { echo "$CFG missing after gateway start" >&2; exit 1; }
 
 # One-time setup (deploy.sh step 8): enable the WOOWTECH tools and plugins. Guarded by a stamp so a

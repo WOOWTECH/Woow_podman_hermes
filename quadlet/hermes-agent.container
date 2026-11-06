@@ -18,7 +18,7 @@ After=hermes-postgres.service hermes-redis.service
 
 [Container]
 ContainerName=hermes-agent
-Image=localhost/woow-hermes-agent:v0.22.5-woow3
+Image=localhost/woow-hermes-agent:v0.22.5-woow4
 Pull=never
 Network=hermes.network
 HostName=hermes-agent
