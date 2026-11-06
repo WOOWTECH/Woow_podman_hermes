@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tests/provisioning-test.sh: container/fix-model-routes.py against the config shapes a real host
-# produces. It is the last command of container/rootfs/usr/local/bin/woow-provision, which runs
-# under `set -euo pipefail`, so its exit code decides whether hermes-provision.service - and through
-# it scripts/install.sh and scripts/migrate-legacy.sh - succeeds.
+# produces. container/rootfs/usr/local/bin/woow-provision runs it under `set -euo pipefail`, so its
+# exit code decides whether hermes-provision.service - and through it scripts/install.sh and
+# scripts/migrate-legacy.sh - succeeds. The rest of woow-provision needs the image:
+# tests/image-test.sh (B2) runs it in a throwaway container.
 #
 # Needs python3 only; no container, no podman.
 set -uo pipefail
@@ -100,13 +101,26 @@ if ((RC == 0)); then pass "model_routes mentioned only in comments exits 0"; els
 if [[ $OUT == *"No model_routes section yet"* ]]; then pass "and is not fooled into thinking a section exists"; else fail "comments were treated as a section: $OUT"; fi
 if [[ $(sha256sum <"$T/commented.yaml") == "$before" ]]; then pass "and changes nothing"; else fail "it rewrote a config made of comments"; fi
 
-# 4. woow-provision must keep running it as its last command, so this exit code keeps mattering.
+# 4. woow-provision must keep running it under set -e, so this exit code keeps mattering.
 # shellcheck disable=SC2016 # the literal call site in woow-provision, not an expansion
 needle='fix-model-routes.py "$CFG"'
 if grep -qF -- "$needle" "$REPO/container/rootfs/usr/local/bin/woow-provision"; then
   pass "woow-provision still runs fix-model-routes.py on the live config"
 else
   fail "woow-provision no longer runs fix-model-routes.py the way this test assumes"
+fi
+if grep -qx 'set -euo pipefail' "$REPO/container/rootfs/usr/local/bin/woow-provision"; then
+  pass "woow-provision still runs under set -euo pipefail"
+else
+  fail "woow-provision no longer runs under set -euo pipefail; this test's premise changed"
+fi
+# 5. The v0.22.5 toolset names: moa and homeassistant are gone upstream, and enabling a missing
+#    toolset fails woow-provision (that is what left hermes-provision.service failed on 0.20.0).
+toolsets=$(sed -n 's/^  for t in \(.*\); do .*tools enable.*/\1/p' "$REPO/container/rootfs/usr/local/bin/woow-provision")
+if [[ -n $toolsets && ! " $toolsets " =~ \ (moa|homeassistant)\  ]]; then
+  pass "woow-provision enables only toolsets v0.22.5 still has ($toolsets)"
+else
+  fail "woow-provision enables a removed toolset or the loop moved: '$toolsets'"
 fi
 
 printf '\n%d passed, %d failed\n' "$npass" "$nfail"

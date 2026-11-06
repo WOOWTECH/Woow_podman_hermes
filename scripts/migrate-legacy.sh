@@ -450,6 +450,13 @@ carry() { # carry <secret> <container> <ENV KEY> <fallback length>
 carry hermes-api-server-key "$AGENT" API_SERVER_KEY 64
 carry hermes-webhook-secret "$AGENT" WEBHOOK_SECRET 64
 carry hermes-dashboard-password "$AGENT" HERMES_DASHBOARD_BASIC_AUTH_PASSWORD 32
+# The compose stack never set a session-signing secret (every restart logged everyone out), so
+# there is nothing to carry: generate it here, before the cutover, as install.sh would.
+if ((rotate)); then
+  ql_secret_ensure hermes-dashboard-session-secret random:64 --replace
+else
+  ql_secret_ensure hermes-dashboard-session-secret random:64
+fi
 # Never rotated: PostgreSQL reads POSTGRES_PASSWORD_FILE only when it initialises a cluster, so on
 # an adopted one the recorded secret must be the password the cluster already has.
 LEGACY_DB_PASSWORD=$(env_of "$DB" POSTGRES_PASSWORD)

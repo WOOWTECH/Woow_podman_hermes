@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Post-start provisioning, run by hermes-provision.service as
 #   podman exec hermes-agent /usr/local/bin/woow-provision --wait 300
-# Replaces deploy.sh step 8 (config policy, tools, plugins) and step 9 (model routes). Needs the gateway
-# up because config.yaml is created on the gateway's first start.
+# Replaces deploy.sh step 8 (tools, plugins) and step 9 (model routes), and writes the defaults the
+# Home Assistant add-on writes from its s6 woow-provision service (container/patches/PROVENANCE).
+# Needs the gateway up: `hermes tools`/`plugins`/`config` act on the live HERMES_HOME.
 set -euo pipefail
 # `podman exec` runs as container root. deploy.sh edited config.yaml with `sed -i` as root, which
 # replaces the file and leaves it root-owned; run everything as the hermes user instead.
@@ -12,7 +13,7 @@ CFG="$DATA/config.yaml"
 POLICY_STAMP="$DATA/.woow-policy-v1"
 wait_s=0
 [[ ${1:-} == --wait ]] && wait_s=${2:-300}
-as_hermes() { "$@"; }
+hermes_cli() { /opt/hermes/.venv/bin/hermes "$@"; }
 
 for ((i = 0; i < wait_s; i += 5)); do
   curl -fsS -o /dev/null http://127.0.0.1:8642/health && break
@@ -21,25 +22,43 @@ done
 curl -fsS -o /dev/null http://127.0.0.1:8642/health || { echo "gateway not healthy after ${wait_s}s" >&2; exit 1; }
 [[ -f $CFG ]] || { echo "$CFG missing after gateway start" >&2; exit 1; }
 
-# One-time WOOWTECH policy (deploy.sh step 8). Guarded by a stamp so a later change made in the
-# dashboard is not reverted on every restart. Delete the stamp to re-apply.
+# One-time setup (deploy.sh step 8): enable the WOOWTECH tools and plugins. Guarded by a stamp so a
+# later change made in the dashboard is not reverted on every restart. Delete the stamp to re-apply.
+# Approval settings stay at upstream's defaults (approvals.mode smart, cron_mode and
+# unattended_mode deny). The sed policy 0.20.0 carried here (approvals off, cron yolo, auto-accept)
+# never matched the v2026.8.31 config template, so it never took effect; the HA add-on removed it
+# and so does this stack (tests/test-config-contract.py keeps it out).
 if [[ ! -f $POLICY_STAMP ]]; then
-  cp -a "$CFG" "$CFG.pre-woow-policy"
-  sed -i \
-    -e 's/mode: manual/mode: off/' \
-    -e 's/cron_mode: deny/cron_mode: yolo/' \
-    -e 's/hooks_auto_accept: false/hooks_auto_accept: true/' \
-    -e 's/subagent_auto_approve: false/subagent_auto_approve: true/' \
-    -e '/^terminal:/,/^[a-z]/{s/  backend: auto/  backend: local/}' \
-    -e '/^web:/,/^[a-z]/{s/  backend: .*/  backend: ddgs/}' \
-    -e '/^web:/,/^[a-z]/{s/  search_backend: .*/  search_backend: ddgs/}' \
-    -e '/^toolsets:/d' -e '/^- hermes-cli$/d' -e '/^  - hermes-cli$/d' \
-    "$CFG"
-  for t in video moa context_engine homeassistant; do as_hermes hermes tools enable "$t"; done
-  for p in disk-cleanup security-guidance; do as_hermes hermes plugins enable "$p"; done
-  as_hermes touch "$POLICY_STAMP"
-  echo "woow-provision: policy v1 applied (backup: $CFG.pre-woow-policy)"
+  # v0.22.5 removed the moa and homeassistant core toolsets: Home Assistant is a catalog plugin, MoA
+  # is selected as a model preset. Enabling them failed this script under set -e.
+  for t in video context_engine; do hermes_cli tools enable "$t"; done
+  for p in disk-cleanup security-guidance; do hermes_cli plugins enable "$p"; done
+  touch "$POLICY_STAMP"
+  echo "woow-provision: tools and plugins enabled"
 fi
 
 # deploy.sh step 9: idempotent, only adds missing @openai:/@openai-api: routes.
-as_hermes python3 /opt/woow/fix-model-routes.py "$CFG"
+python3 /opt/woow/fix-model-routes.py "$CFG"
+
+# Defaults, written only while a key has no value, so a value set later in the dashboard is kept.
+# `config get` prints "" for a key with an empty default and "Config key not set: ..." on stderr (exit
+# 1) for an unknown one; the `|| true` keeps that exit from ending this script under set -e.
+set_default() {
+  local current
+  current=$(hermes_cli config get "$1" 2>&1) || true
+  if [[ -z $current || $current == "Config key not set"* ]]; then
+    hermes_cli config set "$1" "$2" >/dev/null && echo "woow-provision: set $1 = $2"
+  fi
+}
+# The gateway turns the webhook receiver on from WEBHOOK_ENABLED, but the dashboard's Webhooks page
+# and `hermes webhook` read platforms.webhook.
+set_default platforms.webhook.enabled true
+set_default platforms.webhook.extra.port "${WEBHOOK_PORT:-8644}"
+# ddgs is installed, so upstream would pick it for extraction too, and it can only search. Keyless
+# parallel extracts; keyless firecrawl search is refused.
+set_default web.search_backend ddgs
+set_default web.extract_backend parallel
+# Unset means the browser-use CLI, which needs a running Chrome. "off" is the built-in
+# agent-browser, driving the image's Chromium through AGENT_BROWSER_EXECUTABLE_PATH (set by
+# upstream's stage2).
+set_default browser.backend off

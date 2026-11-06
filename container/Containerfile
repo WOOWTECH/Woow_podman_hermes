@@ -1,8 +1,8 @@
 # Woow Hermes Agent image - replaces deploy.sh's in-container mutations with build steps.
 #
 #   podman build --format=docker --target slim \
-#     --build-arg WOOW_IMAGE_VERSION=v2026.8.31-woow1 \
-#     -t localhost/woow-hermes-agent:v2026.8.31-woow1 -f container/Containerfile container/
+#     --build-arg WOOW_IMAGE_VERSION=v0.22.5-woow1 \
+#     -t localhost/woow-hermes-agent:v0.22.5-woow1 -f container/Containerfile container/
 #
 # Targets
 #   slim (default)  upstream image + exactly what deploy.sh did to the running container. Parity with
@@ -13,10 +13,15 @@
 #
 # Every step that deploy.sh ran with 2>/dev/null now fails the build. A moved patch anchor, a changed
 # download or a missing tool is caught here, not at 03:00 in production.
-ARG HERMES_BASE=docker.io/nousresearch/hermes-agent:v2026.8.31@sha256:64923faeae267792bf9bf87fe3b4c4869e35004e360c7df01730ad801b74d524
+#
+# The feature set follows the Home Assistant add-on (WOOWTECH/Woow_ha_hermes_add_on, hermes/Dockerfile),
+# minus what only exists there (nginx/ingress, the Supervisor token boundary, Paseo). The patches it
+# shares with that add-on are listed with their source hashes in patches/PROVENANCE.
+ARG HERMES_BASE=docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 FROM ${HERMES_BASE} AS slim
 USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DDGS_VERSION=9.16.0
 ARG OFFICECLI_VERSION=v1.0.135
 ARG OFFICECLI_SHA256=00028af3db48678fc9ff6c8f9e70fa4c150dcee2b43ed85254afc8f4a48e13eb
@@ -34,23 +39,44 @@ RUN apt-get update \
            /opt/hermes/skills/media/youtube-content /opt/hermes/skills/smart-home/openhue
 
 # deploy.sh step 4: ddgs web search inside the agent venv (pinned)
+# The base no longer puts uv on PATH; its package manager names the launcher it ships.
 RUN SITE="$(/opt/hermes/.venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')" \
- && uv pip install --python /opt/hermes/.venv/bin/python3 --target="$SITE" "ddgs==${DDGS_VERSION}" \
+ && UV="$(/opt/hermes/.venv/bin/python3 -c 'from pm import uv_launcher; print(uv_launcher("uv"))')" \
+ && "$UV" pip install --python /opt/hermes/.venv/bin/python3 --target="$SITE" "ddgs==${DDGS_VERSION}" \
  && /opt/hermes/.venv/bin/python3 -c 'from ddgs import DDGS'
 
 # deploy.sh step 4b: OfficeCLI. It used to be downloaded into the data volume; now it is a pinned,
 # checksummed image binary.
-RUN curl -fsSL -o /usr/local/bin/officecli \
+RUN curl -fsSL --retry 5 -o /usr/local/bin/officecli \
       "https://github.com/iOfficeAI/OfficeCLI/releases/download/${OFFICECLI_VERSION}/officecli-linux-x64" \
  && echo "${OFFICECLI_SHA256}  /usr/local/bin/officecli" | sha256sum -c - \
  && chmod 0755 /usr/local/bin/officecli \
  && DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true officecli --version
 
-# deploy.sh step 11: MCP OAuth RFC 9207 `iss` patches. The scripts exit 1 when an anchor is missing,
-# so an upstream change that moves the code breaks the build instead of silently shipping unpatched.
+# deploy.sh step 11 is gone: v0.22.5 carries the RFC 9207 `iss` through its native dashboard OAuth
+# flow, so the old iss-callback / iss-permissive patches are dropped and the MCP SDK's issuer check
+# is kept. upstream-contract.py proves the native flow (state and issuer) on this exact base.
+
+# The browser tool: agent-browser through upstream's hash-checked package manager pin. Its payload
+# installs into HERMES_HOME, so point that at a build-only store outside the /opt/data volume, make it
+# world-readable (the runtime UID is remapped at boot) and run it once as the hermes user.
+RUN export HERMES_HOME=/opt/woow/browser-home \
+ && python3 -c 'from pm import ensure; ensure("agent-browser", explicit=True)' \
+ && ln -sf "$(python3 -c 'from pm import installed_package; print(installed_package("agent-browser").binary)')" /usr/local/bin/agent-browser \
+ && chmod 0755 /opt/woow/browser-home \
+ && chmod -R a+rX /opt/woow/browser-home/tools \
+ && /command/s6-setuidgid hermes /usr/local/bin/agent-browser --version \
+ && test "$(readlink -f /usr/local/bin/agent-browser | cut -d/ -f2-3)" = opt/woow
+
+# Own patches to upstream code (patches/PROVENANCE). Each exits non-zero when its anchor or its
+# reviewed source hash does not match, so a base bump that moves the code fails the build.
+#   upstream-contract.py  exercises the native login/OAuth state+issuer and approval contracts
+#   scoped-prompt-gc.py   deleting a session reclaims only the prompts that session referenced
 COPY patches/ /tmp/woow-patches/
-RUN python3 /tmp/woow-patches/iss-callback.py \
- && python3 /tmp/woow-patches/iss-permissive.py \
+RUN python3 /tmp/woow-patches/upstream-contract.py \
+ && python3 /tmp/woow-patches/scoped-prompt-gc.py \
+ && python3 /tmp/woow-patches/scoped-prompt-gc.py --check \
+ && rm -rf /opt/hermes/__pycache__ \
  && find /opt/hermes/hermes_cli /opt/hermes/tools -type d -name __pycache__ -prune -exec rm -rf {} + \
  && rm -rf /tmp/woow-patches
 
@@ -61,35 +87,58 @@ RUN git clone --filter=blob:none https://github.com/obra/superpowers.git /tmp/sp
  && cp -a /tmp/sp/skills /opt/woow/seed/skills \
  && rm -rf /tmp/sp
 
-# Old Dockerfile layer 7: the base builds ui-tui as uid 10000 but runs hermes as HERMES_UID.
-RUN chown -R hermes:hermes /opt/hermes/ui-tui /opt/hermes/node_modules
+# The old ui-tui/node_modules chown (and cont-init 016-fix-tui-perms) is gone: v0.22.5 keeps the
+# application tree root-owned and world-readable on purpose, and the TUI runs from it as any UID.
 
 # Provisioning that must touch the data volume, shipped as image files:
-#   /etc/cont-init.d/016-fix-tui-perms   (old Dockerfile fix B)
-#   /etc/cont-init.d/020-woow-provision  boot: ui-tui sync on image change, skills seed, /opt/data/.env keys, cache reset
-#   /usr/local/bin/woow-provision        post-start (hermes-provision.service): config policy once, tools/plugins, model routes
+#   /etc/cont-init.d/020-woow-provision  boot: cache reset on image change, skills seed
+#   /etc/cont-init.d/03-woow-dotenv      boot: provider keys merged into /opt/data/.env
+#   /usr/local/bin/woow-provision        post-start (hermes-provision.service): tools/plugins once,
+#                                        model routes, web/browser/webhook defaults
 #   /opt/woow/fix-model-routes.py        (was config/fix-model-routes.py, podman cp'd by step 9)
 COPY rootfs/ /
 COPY fix-model-routes.py /opt/woow/fix-model-routes.py
-RUN chmod 0755 /etc/cont-init.d/016-fix-tui-perms /etc/cont-init.d/020-woow-provision /usr/local/bin/woow-provision
+RUN chmod 0755 /etc/cont-init.d/020-woow-provision /etc/cont-init.d/03-woow-dotenv /usr/local/bin/woow-provision
+
+# The non-secret settings every deployment shares, baked in as HA does (the unit keeps only what is
+# per-deployment). S6_*: a failed cont-init stops the container instead of starting half-provisioned,
+# and services get 25s to shut down inside the unit's 30s --stop-timeout.
+ENV HERMES_DASHBOARD=1 \
+    HERMES_DASHBOARD_HOST=0.0.0.0 \
+    HERMES_DASHBOARD_PORT=9119 \
+    API_SERVER_ENABLED=true \
+    API_SERVER_HOST=0.0.0.0 \
+    WEBHOOK_ENABLED=true \
+    WEBHOOK_PORT=8644 \
+    HERMES_WRITE_SAFE_ROOT=/opt/data \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true \
+    NODE_OPTIONS=--max-old-space-size=4096 \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
+    S6_SERVICES_GRACETIME=25000 \
+    S6_KILL_GRACETIME=25000
 
 ARG WOOW_IMAGE_VERSION=dev
 ENV WOOW_IMAGE_VERSION=${WOOW_IMAGE_VERSION}
+# Declared before FROM, so it has to be declared again to be used in the label.
+ARG HERMES_BASE
 LABEL org.opencontainers.image.title="Woow Hermes Agent" \
       org.opencontainers.image.source="https://github.com/WOOWTECH/Woow_podman_hermes" \
       org.opencontainers.image.version="${WOOW_IMAGE_VERSION}" \
       io.woowtech.hermes.base="${HERMES_BASE}"
 
-# Build-time proof of every deploy.sh step that moved into the image.
-RUN command -v tmux \
+# Build-time proof of every deploy.sh step that moved into the image, and of the v0.22.5 contracts
+# the dropped patches relied on.
+RUN command -v tmux officecli agent-browser \
  && test -x /usr/local/bin/hermes \
  && /opt/hermes/.venv/bin/python3 -c 'from ddgs import DDGS' \
  && test ! -e /usr/local/bin/helm && test ! -e /usr/local/bin/argocd \
  && grep -q 'iss: Optional\[str\] = None' /opt/hermes/hermes_cli/web_routers/mcp.py \
- && grep -q 'iss mismatch tolerated' /opt/hermes/.venv/lib/python*/site-packages/mcp/client/auth/utils.py \
+ && ! grep -rq 'iss mismatch tolerated' /opt/hermes/.venv/lib/python*/site-packages/mcp/client/auth/ \
+ && test "$(stat -c %u:%a /opt/hermes/ui-tui)" = 0:755 && test -r /opt/hermes/ui-tui/dist/entry.js \
+ && test ! -e /etc/cont-init.d/016-fix-tui-perms \
  && test -f /opt/woow/seed/skills/brainstorming/SKILL.md
 
-# The base image's s6-overlay entrypoint switches to HERMES_UID itself: do not set USER.
+# The base image's s6-overlay entrypoint remaps hermes to HERMES_UID and drops to it: do not set USER.
 
 
 FROM slim AS full

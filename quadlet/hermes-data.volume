@@ -1,4 +1,4 @@
-# HERMES_HOME: SQLite state, sessions, skills, memories, ui-tui copy, playwright browsers.
+# HERMES_HOME: SQLite state, sessions, skills, memories, .env. Owned by container uid 1000 (HERMES_UID).
 #
 # VolumeName= is rendered from WOOW_HERMES_DATA_VOLUME so an existing deployment can be adopted
 # where it is (STANDARD 5 and 7): scripts/migrate-legacy.sh sets it to the compose-era name

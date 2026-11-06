@@ -3,10 +3,11 @@
 #
 #   scripts/build-image.sh [--target slim|full] [--force]
 #
-#   --target   slim (default) is the upstream base plus exactly what the old deploy.sh did to the
-#              running container: tmux, the hermes CLI symlink, the skill trims, ddgs, OfficeCLI, the
-#              MCP OAuth iss patches, the superpowers seed and the TUI ownership fix. full adds the
-#              old 7-layer toolchain, which the podman deployment never actually ran.
+#   --target   slim (default) is the upstream base plus what the old deploy.sh did to the running
+#              container (tmux, the hermes CLI symlink, the skill trims, ddgs, OfficeCLI, the
+#              superpowers seed) and what the HA add-on adds (agent-browser, the upstream-contract
+#              and scoped-prompt-gc patches). full adds the old 7-layer toolchain, which the podman
+#              deployment never actually ran.
 #   --force    rebuild even when the tag exists; the previous image is kept as <tag>-prev
 #
 # The build fails loudly where deploy.sh used to fail silently: a moved patch anchor, a changed

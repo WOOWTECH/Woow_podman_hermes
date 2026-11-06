@@ -10,9 +10,9 @@
 #   --no-llm           install without a provider key (platform checks only)
 #   --no-build         do not build the image; fail when localhost/woow-hermes-agent:<tag> is missing
 #   --rebuild          rebuild the image even when the tag exists (keeps the old one as <tag>-prev)
-#   --rotate-secrets   generate new values for the three secrets the agent reads (API key, webhook
-#                      secret, dashboard password) and restart it. The database password is left
-#                      alone: PostgreSQL reads it only at initdb.
+#   --rotate-secrets   generate new values for the four secrets the agent reads (API key, webhook
+#                      secret, dashboard password, dashboard session-signing secret) and restart it.
+#                      The database password is left alone: PostgreSQL reads it only at initdb.
 #   --accept-defaults  on the first run, continue with the example settings instead of stopping
 #   --no-start         install the files and daemon-reload only
 #   --no-smoke         skip tests/smoke.sh at the end
@@ -105,10 +105,13 @@ if ((rotate)); then
   ql_secret_ensure hermes-api-server-key random:64 --replace
   ql_secret_ensure hermes-webhook-secret random:64 --replace
   ql_secret_ensure hermes-dashboard-password random:32 --replace
+  ql_secret_ensure hermes-dashboard-session-secret random:64 --replace
 else
   ql_secret_ensure hermes-api-server-key random:64
   ql_secret_ensure hermes-webhook-secret random:64
   ql_secret_ensure hermes-dashboard-password random:32
+  # Signs dashboard sessions (HERMES_DASHBOARD_BASIC_AUTH_SECRET), so a restart keeps users logged in.
+  ql_secret_ensure hermes-dashboard-session-secret random:64
 fi
 # Never --replace: PostgreSQL reads POSTGRES_PASSWORD_FILE only when it initialises the cluster, so a
 # new value would lock the existing data out. Rotate it with ALTER ROLE if the parity DB is ever used.

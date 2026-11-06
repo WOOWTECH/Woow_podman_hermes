@@ -1,0 +1,36 @@
+Vendored from https://github.com/WOOWTECH/Woow_ha_hermes_add_on @ d4cde4580840ae9b6e3d928427130190484223aa
+8ae2472d4c2ada8096f34a81ffb2cd182bae8fd6b8a4de488479c00dface8d34  hermes/patches/upstream-contract.py -> container/patches/upstream-contract.py
+ad4c9cc97dab5249c1e4680e1c241a89fad63158a3010662468a91df1ed441ab  hermes/patches/scoped-prompt-gc.py -> container/patches/scoped-prompt-gc.py
+3729fddead993b886a1c5259b60215e200f6870478fff879db2c609849281fa4  hermes/rootfs/etc/cont-init.d/03-woow-dotenv -> container/rootfs/etc/cont-init.d/03-woow-dotenv
+3a2285275c7db53601a981fbd1699a93ac9929cfd2cd8e276dd155d226ed2054  hermes/rootfs/etc/cont-init.d/020-woow-provision -> container/rootfs/etc/cont-init.d/020-woow-provision
+a1e77b48e78ed1701fb13a6b5c8bb6f73495fd35e474fd67a5ac8e737a346330  hermes/rootfs/usr/local/bin/woow-provision -> container/rootfs/usr/local/bin/woow-provision
+caf9791169450ff09c210a8889715acf74fb9e84a496c24fee9312320a5f3fa2  hermes/rootfs/etc/s6-overlay/s6-rc.d/woow-provision/run (defaults only, merged into woow-provision)
+4b20d2a5687beb21c7bacf51b86d87736c12f52fbc57d12636f8890e60dd31ae  hermes/test/test-approval-gate.py -> tests/test-approval-gate.py
+1f0fea5c5fba280d63fba49281dc329c3f1eeff94e909d66b80f050fe8c469f6  hermes/test/test-scoped-prompt-gc.py -> tests/test-scoped-prompt-gc.py
+c4e1890a8a2cedcb31c8a28f972779238ddad33afc36ca1d81d04a6c1f58123e  hermes/test/test-scoped-prompt-gc-patch.py -> tests/test-scoped-prompt-gc-patch.py
+05fe84f15d731636a1504e7bf133c34c5d009e27db2f82cd80e02c578817cdaa  hermes/test/run-scoped-prompt-gc-image.py -> tests/run-scoped-prompt-gc-image.py
+hermes/test/fixtures/scoped-prompt-gc/ -> tests/fixtures/scoped-prompt-gc/ (unchanged, with its LICENSE)
+
+Unchanged: upstream-contract.py, scoped-prompt-gc.py and the scoped-prompt-gc fixtures are byte-identical
+to the source (check with sha256sum). upstream-contract.py renders the login page with an HA ingress
+prefix; that only exercises upstream's prefix-aware renderer and needs nothing from Home Assistant.
+
+Local changes:
+- 03-woow-dotenv: the keys come from the container environment (EnvironmentFile=hermes.env), not from
+  /data/options.json, and the applied-value hashes live in /opt/data/.woow-dotenv/ (root, 0700)
+  because this stack has no /data. jq is not needed.
+- 020-woow-provision: unchanged logic; also removes the /opt/data/ui-tui copy that 0.20.0 made.
+- woow-provision: the HA s6 longrun's set_default block (webhook platform, web search/extract
+  backends, browser backend) is folded in, because here hermes-provision.service runs it.
+- tests: paths point at container/patches/ and tests/fixtures/; run-scoped-prompt-gc-image.py uses
+  podman and needs --image (there is no published image to pin); test-approval-gate.py's usage line.
+
+Not vendored, and why:
+- patches/approval-unattended.py: HA no longer applies it; v0.22.5 routes cron/API/webhook runs to
+  approvals.cron_mode / unattended_mode natively (its anchor no longer exists in tools/approval.py).
+  tests/test-approval-gate.py proves the native behaviour in the built image instead.
+- patches/ha-restore-ownership.py + rootfs/opt/woow/restore_ownership.py: they repair the ownership a
+  Home Assistant Supervisor restore resets (it extracts addon_config as root). scripts/restore.sh
+  uses podman volume export/import, which keeps the owners, and stage2 already repairs the
+  hermes-owned trees, so there is nothing for it to do here.
+- patches/ha-exec-boundary.py, nginx/ingress, ws_relay, cookies, Paseo: Home Assistant only (phase 2).

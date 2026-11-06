@@ -19,20 +19,35 @@ jobs:
       - name: Credentials, compose removal (D1), READMEs, image pins
         run: tests/lint-repo.sh
 
-      - name: MCP OAuth patch anchors against the pinned upstream tag
+      - name: Image patches and upstream contracts against the pinned upstream tag
         run: tests/patch-anchors.sh
 
       - name: shellcheck the in-image provisioning scripts
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck -s bash container/rootfs/usr/local/bin/woow-provision container/rootfs/etc/cont-init.d/020-woow-provision
-          shellcheck -s sh container/rootfs/etc/cont-init.d/016-fix-tui-perms
+          shellcheck -s bash container/rootfs/usr/local/bin/woow-provision container/rootfs/etc/cont-init.d/020-woow-provision \
+            container/rootfs/etc/cont-init.d/03-woow-dotenv
 
       - name: python syntax of the image patches
         run: python3 -m py_compile container/patches/*.py container/fix-model-routes.py
 
       - name: In-image provisioning behaviour (fix-model-routes exit codes)
         run: tests/provisioning-test.sh
+
+      - name: Build, unit and provisioning contract (no image)
+        run: python3 tests/test-config-contract.py
+
+      # The image lanes (tests/image-test.sh, tests/run-scoped-prompt-gc-image.py) need the built
+      # image and stay local; these two run the same patch against upstream excerpts.
+      - name: Scoped prompt GC, patch contract and SQLite regressions on upstream excerpts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 tests/test-scoped-prompt-gc-patch.py
+          python3 tests/test-scoped-prompt-gc.py
+          if python3 tests/test-scoped-prompt-gc.py --unpatched >/dev/null; then
+            echo "the negative control passed: the GC regressions no longer detect the unscoped delete"; exit 1
+          fi
 
       - name: hadolint on the Containerfile
         uses: hadolint/hadolint-action@v3.1.0
