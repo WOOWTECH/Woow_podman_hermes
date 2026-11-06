@@ -46,7 +46,7 @@ the entire OpenClaw branch (including `openclaw-k3s-paas/`, `setup-wizard/`,
 | `config/` | `hermes.env.example` and the golden reference configs |
 | `scripts/` | `install.sh`, `upgrade.sh`, `uninstall.sh`, `backup.sh`, `restore.sh`, `build-image.sh` |
 | `scripts/lib/` | The vendored `quadlet-lib.sh`. **Do not edit it here** — it is synced from the shared library and CI checks its hash against `quadlet-lib.manifest`. |
-| `tests/` | `dryrun.sh`, `smoke.sh`, `lint-repo.sh`, `patch-anchors.sh` |
+| `tests/` | `dryrun.sh`, `smoke.sh`, `lint-repo.sh`, `patch-anchors.sh`, the Python contract and GC tests, `image-test.sh` (local, needs the built image) |
 | `docs/` | Screenshots, user manual, API contract, Odoo posting notes |
 | `skills/` | Hermes skill definitions |
 
@@ -58,7 +58,14 @@ Kubernetes manifests live in `Woow_k3s_hermes`, not here. The compose deployment
 ```bash
 tests/dryrun.sh                                          # render + Quadlet dry-run + systemd-analyze
 tests/lint-repo.sh                                       # credentials, image pins, no live mutation
+python3 tests/test-config-contract.py                    # image / unit / provisioning contract
 shellcheck -x scripts/*.sh scripts/lib/*.sh tests/*.sh
+```
+
+When the image changes (`container/`), also build it and boot it in throwaway containers:
+
+```bash
+scripts/build-image.sh --force && tests/image-test.sh
 ```
 
 `.github/workflows/quadlet-ci.yml` runs the same three on `ubuntu-24.04`.
