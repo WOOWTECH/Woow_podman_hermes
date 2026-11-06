@@ -19,6 +19,15 @@
 # B6 a volume carried over from the compose stack (everything owned by uid 1000) boots and
 #    provisions without an ownership change, and its stale ui-tui copy is removed
 # B7 nothing but stage2's account remap is written into the image layer
+# P1 the Paseo wrapper keeps upstream's privilege drop: `podman exec ... hermes` as root runs as 1000
+# P2 the dashboard carries the Paseo host adapter (/api/hermes-paseo-host/*) behind its login
+# P3 with an HTTPS public URL: that origin and HERMES_PASEO_EXTRA_ORIGIN are accepted, others are
+#    ORIGIN_DENIED; the extra origin reaches the dashboard canonical; a stale public URL in .env is
+#    stripped
+# P4 the loopback login (http://127.0.0.1:9119) still works with an HTTPS public URL, and so does a
+#    tunnel-shaped login (public Host, X-Forwarded-Proto https from loopback: __Host- Secure cookies)
+# P5 a public URL that is not an exact origin: 503 INVALID_DASHBOARD_ORIGIN, login unaffected
+# P6 a malformed HERMES_PASEO_EXTRA_ORIGIN stops the boot without echoing the value
 #
 # The credentials are random throwaway values in a 0600 file; they are never printed.
 # shellcheck source-path=SCRIPTDIR
@@ -40,8 +49,8 @@ check() { if "${@:2}"; then pass "$1"; else fail "$1"; fi; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/hermes-image-test.XXXXXX")
 chmod 700 "$T"
 cleanup() {
-  podman rm -f -t 10 "$PFX-1" "$PFX-2" >/dev/null 2>&1 || true
-  podman volume rm -f "$PFX-data" "$PFX-data-uid1000" >/dev/null 2>&1 || true
+  podman rm -f -t 10 "$PFX-1" "$PFX-2" "$PFX-3" "$PFX-4" >/dev/null 2>&1 || true
+  podman volume rm -f "$PFX-data" "$PFX-data-uid1000" "$PFX-data-paseo" >/dev/null 2>&1 || true
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -50,15 +59,17 @@ mkdir -p "$T" && chmod 700 "$T"
 
 rnd() { head -c "$1" /dev/urandom | base64 -w0 | tr -d '/+='; }
 # What the unit passes: the Environment= lines, the env file and the four env-type secrets.
-write_env() { # write_env <minimax value>
+write_env() { # write_env <minimax value> [public URL] [HERMES_PASEO_EXTRA_ORIGIN]
+  local pub=${2:-http://localhost:19119}
   (umask 077 && cat >"$T/env" <<EOF
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 API_SERVER_CORS_ORIGINS=*
 GATEWAY_ALLOW_ALL_USERS=true
 HERMES_UID=1000
 HERMES_GID=1000
-HERMES_DASHBOARD_PUBLIC_URL=http://localhost:19119
-HERMES_BASE_URL=http://localhost:19119
+HERMES_DASHBOARD_PUBLIC_URL=$pub
+HERMES_BASE_URL=$pub
+HERMES_PASEO_EXTRA_ORIGIN=${3:-}
 MINIMAX_API_KEY=$1
 OPENROUTER_API_KEY=
 API_SERVER_KEY=$API_KEY
@@ -168,6 +179,92 @@ other=$(in_c 'find /opt/data -path /opt/data/.woow-dotenv -prune -o \( ! -uid 10
 check "B6 every file still belongs to 1000:1000 (only .woow-dotenv is root's)" test -z "$other"
 check "B6 the stale /opt/data/ui-tui copy is gone" in_c 'test ! -e /opt/data/ui-tui'
 check "B6 the existing approvals.mode (manual) is kept" test "$(cfg approvals.mode)" = manual
+
+# ---- P1-P6: Paseo ---------------------------------------------------------------------------------
+# What the owner runs: the dashboard behind an HTTPS tunnel, the loopback as the extra origin (with a
+# trailing slash, which the boot hook drops).
+PUB=https://hermes-p2.example
+write_env "imagetest-minimax-3" "$PUB" "http://127.0.0.1:9119/"
+podman volume create "$PFX-data-paseo" >/dev/null
+C=$PFX-3
+check "P  the container boots with an HTTPS public URL and an extra Paseo origin" start "$C" "$PFX-data-paseo"
+# P1: the root exec path goes through /opt/hermes/bin/hermes (s6-setuidgid) into the wrapper; the
+# pycache the wrapper's Python writes is owned by whoever ran it (the image sets
+# PYTHONDONTWRITEBYTECODE=1; empty turns it off). The opt-out is the control.
+podman exec -e PYTHONDONTWRITEBYTECODE= -e PYTHONPYCACHEPREFIX=/tmp/p1-drop "$C" hermes --version >/dev/null 2>&1
+podman exec -e PYTHONDONTWRITEBYTECODE= -e PYTHONPYCACHEPREFIX=/tmp/p1-root -e HERMES_DOCKER_EXEC_AS_ROOT=1 "$C" hermes --version >/dev/null 2>&1
+check "P1 podman exec ... hermes (as root) runs the CLI as uid 1000" test "$(in_c 'stat -c %u /tmp/p1-drop')" = 1000
+check "P1 the control: HERMES_DOCKER_EXEC_AS_ROOT=1 keeps root" test "$(in_c 'stat -c %u /tmp/p1-root')" = 0
+# shellcheck disable=SC2016 # expanded by the container's sh
+check "P1 the venv entry point is the Paseo wrapper, the shim is upstream's" \
+  in_c 'grep -q "from dashboard_control import install" /opt/hermes/.venv/bin/hermes && cmp -s /opt/hermes/bin/hermes /opt/hermes/docker/hermes-exec-shim.sh && test "$(command -v hermes)" = /opt/hermes/bin/hermes'
+# req <method> <path> [curl args...]: "<status> <detail>" of a dashboard request from inside the container
+# shellcheck disable=SC2016 # expanded by the container's sh
+req() {
+  local m=$1 path=$2
+  shift 2
+  podman exec "$C" sh -c 'm=$1 p=$2; shift 2; code=$(curl -s -o /tmp/p-body -w "%{http_code}" -X "$m" "$@" "http://127.0.0.1:9119$p"); printf "%s %s" "$code" "$(sed -n "s/.*\"detail\": *\"\([A-Z_]*\)\".*/\1/p" /tmp/p-body)"' \
+    sh "$m" "$path" "$@" 2>/dev/null
+}
+# login [curl args...]: log in with the dashboard password, keep the cookie in /tmp/p-cookie
+# shellcheck disable=SC2016,SC2120 # expanded by the container's sh; check passes the arguments
+login() {
+  podman exec "$C" sh -c 'rm -f /tmp/p-cookie; curl -s -o /dev/null -D /tmp/p-headers -c /tmp/p-cookie "$@" -H "Content-Type: application/json" \
+    --data "{\"provider\":\"basic\",\"username\":\"admin\",\"password\":\"$HERMES_DASHBOARD_BASIC_AUTH_PASSWORD\",\"next\":\"/\"}" \
+    http://127.0.0.1:9119/auth/password-login' sh "$@" >/dev/null 2>&1
+}
+CAP=/api/hermes-paseo-host/capabilities
+check "P2 the adapter route refuses an anonymous caller (401)" test "$(req GET $CAP -H "Origin: $PUB" | cut -d' ' -f1)" = 401
+check "P4 the loopback login works with an HTTPS public URL" login
+check "P4 the loopback session reaches the API" test "$(req GET /api/config -b /tmp/p-cookie | cut -d' ' -f1)" = 200
+# Not installed yet, so an accepted origin ends at PLUGIN_DISABLED, the check after the origin check:
+# that 403 proves the adapter is mounted and the origin passed.
+check "P2/P3 the public HTTPS origin is accepted by the adapter" test "$(req GET $CAP -b /tmp/p-cookie -H "Origin: $PUB")" = "403 PLUGIN_DISABLED"
+check "P3 the extra (loopback) origin is accepted" test "$(req GET $CAP -b /tmp/p-cookie -H 'Origin: http://127.0.0.1:9119')" = "403 PLUGIN_DISABLED"
+check "P3 another origin is refused" test "$(req GET $CAP -b /tmp/p-cookie -H 'Origin: https://evil.example')" = "403 ORIGIN_DENIED"
+check "P3 localhost is not 127.0.0.1" test "$(req GET $CAP -b /tmp/p-cookie -H 'Origin: http://localhost:9119')" = "403 ORIGIN_DENIED"
+check "P3 the extra origin reaches the dashboard canonical" \
+  test "$(in_c 'cat /run/s6/container_environment/HERMES_PASEO_INGRESS_ORIGIN')" = http://127.0.0.1:9119
+# What cloudflared sends to the published port: the public Host and X-Forwarded-Proto https.
+check "P4 a tunnel-shaped login works" login -H 'Host: hermes-p2.example' -H 'X-Forwarded-Proto: https'
+check "P4 ... and gets __Host- Secure cookies" in_c 'grep -i "^set-cookie: __Host-" /tmp/p-headers | grep -qi "secure"'
+# curl never sends a Secure cookie over http://, so replay them as a header, as the browser would
+in_c 'sed -n "s/^[Ss]et-[Cc]ookie: \(__Host-[^;]*\);.*/\1/p" /tmp/p-headers | paste -sd";" | sed "s/;/; /g" >/tmp/p-tunnel-cookie'
+# shellcheck disable=SC2016 # expanded by the container's sh
+check "P4 ... which reach the API through the same proxy headers" \
+  test "$(req GET /api/config -H 'Host: hermes-p2.example' -H 'X-Forwarded-Proto: https' -H "Cookie: $(in_c 'cat /tmp/p-tunnel-cookie')" | cut -d' ' -f1)" = 200
+# a stale public URL in .env (`hermes dashboard register` writes one) would override hermes.env
+podman exec -u hermes "$C" sh -c 'printf "HERMES_DASHBOARD_PUBLIC_URL=http://stale.example\nHERMES_PASEO_INGRESS_ORIGIN=\n" >>/opt/data/.env'
+podman restart -t 30 "$C" >/dev/null
+check "P3 the container comes back after a restart" wait_up "$C"
+check "P3 a public URL or Paseo origin in /opt/data/.env is stripped" \
+  bash -c "! podman exec $C grep -qE '^(HERMES_DASHBOARD_PUBLIC_URL|HERMES_BASE_URL|HERMES_PASEO_[A-Z_]*)=' /opt/data/.env"
+# shellcheck disable=SC2119 # no extra curl arguments: the plain loopback login
+login
+check "P3 the public origin is still the accepted one after the restart" test "$(req GET $CAP -b /tmp/p-cookie -H "Origin: $PUB")" = "403 PLUGIN_DISABLED"
+podman rm -f -t 30 "$C" >/dev/null
+
+# P5: a public URL with a path is fine for OAuth, but the adapter cannot derive an origin from it
+write_env "imagetest-minimax-3" "$PUB/hermes"
+check "P5 the container boots with a public URL that has a path" start "$C" "$PFX-data-paseo"
+check "P5 the loopback login still works" login
+check "P5 the adapter answers 503 INVALID_DASHBOARD_ORIGIN" test "$(req GET $CAP -b /tmp/p-cookie -H "Origin: $PUB")" = "503 INVALID_DASHBOARD_ORIGIN"
+check "P5 ... also without an Origin header" test "$(req GET $CAP -b /tmp/p-cookie)" = "503 INVALID_DASHBOARD_ORIGIN"
+podman rm -f -t 30 "$C" >/dev/null
+
+# P6: a malformed extra origin stops the boot (S6_BEHAVIOUR_IF_STAGE2_FAILS=2), as on Home Assistant
+write_env "imagetest-minimax-3" "$PUB" "https://admin:p6-unique-marker@hermes-p2.example"
+C=$PFX-4
+podman run -d --name "$C" --env-file "$T/env" --memory=4g -v "$PFX-data-paseo:/opt/data" "$IMAGE" gateway run >/dev/null
+stopped() { [[ $(podman inspect --format '{{.State.Status}}' "$C" 2>/dev/null) == exited ]]; }
+p6=0
+for ((i = 0; i < 40; i++)); do stopped && { p6=1; break; }; sleep 3; done
+check "P6 a malformed HERMES_PASEO_EXTRA_ORIGIN stops the container" test "$p6" = 1
+logs=$(podman logs "$C" 2>&1)
+check "P6 ... with the reason in the log" grep -q 'Invalid HERMES_PASEO_EXTRA_ORIGIN' <<<"$logs"
+# shellcheck disable=SC2016 # $1 is the inner bash's argument
+check "P6 ... and without the rejected value" bash -c '! grep -q p6-unique-marker <<<"$1"' _ "$logs"
+podman rm -f -t 10 "$C" >/dev/null
 
 printf '\n%d passed, %d failed\n' "$npass" "$nfail"
 ((nfail == 0))

@@ -93,5 +93,18 @@ dotenv = code(rootfs / "etc/cont-init.d/03-woow-dotenv")
 assert "sha256sum" in dotenv and "API_SERVER_KEY|WEBHOOK_SECRET|HERMES_DASHBOARD_BASIC_AUTH_" in dotenv
 assert ".env" not in code(rootfs / "etc/cont-init.d/020-woow-provision"), "020 must leave .env to 03-woow-dotenv"
 assert "03-woow-dotenv" in containerfile
+# ... nor a copy of the origins hermes.env declares (it would override them for OAuth and Paseo).
+assert "HERMES_DASHBOARD_PUBLIC_URL|HERMES_BASE_URL|HERMES_PASEO_[A-Z_]*" in dotenv
+
+# Paseo (tests/test-paseo-vendor.py checks the adapter itself): the extra origin is converted by the
+# boot hook through the reviewed validator, and install.sh validates it before that.
+paseo_hook = code(rootfs / "etc/cont-init.d/04-woow-paseo-origin")
+assert "HERMES_PASEO_EXTRA_ORIGIN" in paseo_hook and "/opt/woow/paseo_origin.py" in paseo_hook
+assert "rm -f \"$ENVDIR/HERMES_PASEO_INGRESS_ORIGIN\"" in paseo_hook
+assert "04-woow-paseo-origin" in containerfile
+assert "hermes_check_origins" in (REPO / "scripts/render-args.sh").read_text()
+assert re.search(r"^HERMES_PASEO_EXTRA_ORIGIN=$", (REPO / "config/hermes.env.example").read_text(), re.M)
+# A network or volume removed behind systemd's back is recreated (tests/resource-recreate.sh).
+assert 'hermes_ensure_resources "$WORK/out"' in install
 
 print("config contract: ok")
