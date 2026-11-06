@@ -144,7 +144,9 @@ t_install_runs_the_check_before_any_unit_is_applied() {
   dry=$(grep -n 'dry-run complete' "$REPO/scripts/install.sh" | cut -d: -f1)
   [[ -n $check && -n $first && -n $dry ]] || die_t "cannot find the call ($check), the first apply ($first) or the dry-run exit ($dry)"
   ((check < dry && dry < first)) || die_t "hermes_ensure_resources (line $check) must run before the dry-run exit ($dry) and the first ql_apply_units ($first)"
-  grep -q 'scripts/install.sh" --no-smoke' "$REPO/scripts/upgrade.sh" || die_t "upgrade.sh no longer goes through install.sh"
+  grep -qF 'install_args=(--no-smoke)' "$REPO/scripts/upgrade.sh" || die_t "upgrade.sh no longer runs install.sh with --no-smoke"
+  # shellcheck disable=SC2016 # literal call-site text, not an expansion
+  grep -qF 'scripts/install.sh" "${install_args[@]}"' "$REPO/scripts/upgrade.sh" || die_t "upgrade.sh no longer goes through install.sh"
 }
 
 run() {

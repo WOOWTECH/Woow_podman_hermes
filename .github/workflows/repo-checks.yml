@@ -47,6 +47,11 @@ jobs:
       - name: A network or volume removed behind systemd's back is recreated (shims, no podman)
         run: tests/resource-recreate.sh
 
+      # install.sh runs for real on the shims; its Quadlet dry-run needs the runner's
+      # /usr/libexec/podman/quadlet (podman 4.9.3 on ubuntu-24.04).
+      - name: upgrade.sh passes --no-llm/--set/--rebuild on; provider-key check; no false "lacks keys" warning
+        run: tests/install-flags.sh
+
       # The image lanes (tests/image-test.sh, tests/run-scoped-prompt-gc-image.py) need the built
       # image and stay local; these two run the same patch against upstream excerpts.
       - name: Scoped prompt GC, patch contract and SQLite regressions on upstream excerpts
