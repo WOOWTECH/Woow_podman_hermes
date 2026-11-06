@@ -2,6 +2,19 @@
 
 All notable changes to the WoowTech Hermes Agent deployment package.
 
+## [0.23.1-quadlet] - 2026-11-06
+
+New image tag `v0.22.5-woow4` (`woow-provision` only).
+
+### Fixed
+- **`hermes-provision.service` failed when it started with the container**, with "config.yaml missing
+  after gateway start" although the file was there. It dropped to the hermes user before stage2 had
+  remapped that user to `HERMES_UID`, so the whole run stayed uid 10000 and could not enter
+  `/opt/data`. Every restart that hit this window failed the unit, and `upgrade.sh` then rolled back:
+  the first real upgrade from `v0.22.5-woow2` to `woow3` failed this way. Present since 0.21.0-quadlet.
+  `woow-provision` now waits for a healthy gateway first. A failure during a rollback can still be
+  reported until the rolled-back image has this fix.
+
 ## [0.23.0-quadlet] - 2026-11-06
 
 Phase 3 of the alignment with the Home Assistant add-on (`Woow_ha_hermes_add_on` @ `d4cde45`): the

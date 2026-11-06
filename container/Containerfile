@@ -1,8 +1,8 @@
 # Woow Hermes Agent image - replaces deploy.sh's in-container mutations with build steps.
 #
 #   podman build --format=docker --target slim \
-#     --build-arg WOOW_IMAGE_VERSION=v0.22.5-woow3 \
-#     -t localhost/woow-hermes-agent:v0.22.5-woow3 -f container/Containerfile container/
+#     --build-arg WOOW_IMAGE_VERSION=v0.22.5-woow4 \
+#     -t localhost/woow-hermes-agent:v0.22.5-woow4 -f container/Containerfile container/
 #
 # Targets
 #   slim (default)  upstream image + exactly what deploy.sh did to the running container. Parity with
