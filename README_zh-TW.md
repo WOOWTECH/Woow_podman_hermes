@@ -24,7 +24,7 @@ webhook 接收器）以 rootless Podman
 `cont-init.d/03-woow-dotenv`），以及 gateway 健康後（`hermes-provision.service` → `/usr/local/bin/woow-provision`）。
 
 映像與佈建對齊 [Home Assistant add-on](https://github.com/WOOWTECH/Woow_ha_hermes_add_on)（Hermes v0.22.5）：
-相同的上游基底、修補與預設值，只少了 HA 才有的部分（Ingress、Supervisor token 邊界、Paseo）。
+相同的上游基底、修補、預設值與 Paseo 主機介面，只少了 HA 才有的部分（Ingress、Supervisor token 邊界）。
 取自該 add-on 的檔案與雜湊列在 `container/patches/PROVENANCE`。
 
 ## 安裝內容
@@ -83,7 +83,8 @@ scripts/install.sh                     # 建置映像、產生單元、驗證、
 
 | 鍵 | 預設 | 說明 |
 |---|---|---|
-| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | 開啟 dashboard 的 URL；MCP OAuth callback 會用到。兩行必須相同。 |
+| `HERMES_DASHBOARD_PUBLIC_URL` / `HERMES_BASE_URL` | `http://localhost:19119` | 瀏覽器開啟 dashboard 的精確 Origin（經 tunnel 時填其 `https://` Origin，不含路徑）。MCP OAuth callback 會回到這裡，Paseo 插件也只接受來自它的瀏覽器請求。兩行必須相同。見[公開網址與 HTTPS](#公開網址與-https)。 |
+| `HERMES_PASEO_EXTRA_ORIGIN` | 空 | 選用：Paseo 的第二個精確 Origin，例如公開網址是 tunnel 時填 `http://127.0.0.1:19119`。見 [Paseo](#paseo)。 |
 | `MINIMAX_API_KEY` | 空 | 除非以 `--no-llm` 安裝，否則必填。 |
 | `OPENROUTER_API_KEY`、`GITHUB_TOKEN`、`MCP_*` | 空 | 選用的供應商與 MCP 金鑰。 |
 | `WOOW_HERMES_BIND` | `127.0.0.1` | 三個埠發布的位址；`all` 同時涵蓋 IPv4 與 IPv6。 |
@@ -105,6 +106,54 @@ routes），dashboard TUI 就是從那裡讀取的。開機 hook `03-woow-dotenv
 改變時**才寫入 `MINIMAX_API_KEY`、`OPENROUTER_API_KEY` 與 `GITHUB_TOKEN`，所以在 dashboard 改過的金鑰重啟後
 仍會保留（0.20.0 每次開機都重寫整個檔案）。`hermes.env` 裡的空值不會動到該檔；要刪除金鑰請在 dashboard 操作。
 由單元管理的 secrets 會從該檔移除，因為那裡的副本會蓋過 podman secret。
+
+### 公開網址與 HTTPS
+
+`HERMES_DASHBOARD_PUBLIC_URL`（以及值相同的 `HERMES_BASE_URL`）要填**瀏覽器實際使用的 Origin**。經 Cloudflare
+tunnel 或其他 HTTPS 反向代理時，填它的 `https://` Origin，例如 `https://hermes.example.com`：協定、主機，
+非 443 才加埠號，不含路徑與結尾斜線。`install.sh` 會拒絕含帳密、query 或 fragment 的公開網址；非 loopback
+主機使用純 `http`，或不是精確 Origin（路徑前綴可用於 OAuth，但 Paseo 不行）時會發出警告。
+
+公開網址設成 HTTPS Origin 後，本機 loopback 的 dashboard 仍可使用（`tests/image-test.sh` P4）：dashboard 在容器
+內綁定 `0.0.0.0`，因此 v0.22.5 接受任何 `Host`；cookie 依每個請求本身的協定設定，與公開網址無關；登入也沒有
+Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://hermes.example.com` 都能登入，兩者是各自
+獨立的 session。公開網址會改變的是：MCP OAuth callback 一律回到它，Paseo 插件也只接受它（加上
+`HERMES_PASEO_EXTRA_ORIGIN`）。`localhost` 與 `127.0.0.1` 是不同的 Origin。
+
+此時 dashboard 自己的登入就是 agent 前唯一的關卡：能連到 tunnel 的人都能嘗試密碼。請保持
+`hermes-dashboard-password` 夠長（自動產生的即可），並考慮在 tunnel 前加上存取政策。
+
+### Paseo
+
+映像內含取自 HA add-on 的 Paseo 主機介面（`container/vendor/paseo`，即
+[hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin) `0.1.4-rc.9` 經審查的 `host/` 目錄，
+雜湊見 `PROVENANCE.json`）。它讓已啟用的 Paseo 插件能重載 dashboard，並在插件停用或移除前先停止它的 daemon。
+插件本身**不隨映像附帶**：由使用者在 dashboard 安裝，升級也不會自動安裝或啟用。
+
+需求：
+
+- 從其他機器使用時需要 HTTPS 公開網址（Paseo 配對與模型登入都在瀏覽器進行）。介面接受 `http` Origin
+  （和 Home Assistant 的區網用法相同），但非 loopback 主機用純 http 時 `install.sh` 會警告。
+- agent 容器需能連到 GitHub（插件原始碼）、npm registry（Paseo runtime，首次使用時下載到 `/opt/data`，約一分鐘）
+  以及官方 Paseo relay 與 Web 介面（`app.paseo.sh`）。
+- Node.js 22.19 以上（插件的 `engines`）：映像內是 v26.12.1，建置時會檢查。
+
+`install.sh`（或 `upgrade.sh`）之後的步驟：
+
+1. **從公開網址**（或 `HERMES_PASEO_EXTRA_ORIGIN`）開啟 dashboard 並登入。
+2. **Plugins** → *Git URL or owner/repo* 填 `WOOWTECH/hermes-paseo-plugin`，安裝目前的版本（`0.1.4-rc.9`；以
+   程式呼叫 Plugins API 時 ref 必須是完整 commit SHA `1101a5da63178e08bd0fdf849db8e2a5de4d6ef1`，不能用 tag）並
+   啟用。來源為公開 GitHub，不需要 GitHub token。確認 caution 提示前，先核對來源與權限說明。
+3. 點 **Paseo**。首次啟動會下載 runtime，請等頁面顯示已啟動。Hermes v0.22.5 會在第一次使用時載入新插件的後端，
+   只有頁面持續顯示插件 API 尚未載入時才需要按 **重載 Dashboard**。
+4. 產生配對連結，點 **開啟 Paseo**，在官方介面按 **Connect**。配對連結具有存取能力，請勿公開。新裝置請先新增
+   project（**Add project → New directory**，父目錄 `/opt/data`）。
+5. **New workspace**，選 project、Hermes、已登入的模型，再按 **Create**。
+
+停用或移除插件請在 dashboard 的 Plugins 頁操作（主機介面會先停止 Paseo daemon）；從 CLI 移除前先執行
+`/paseo stop`。狀態、配對與對話保存在 `/opt/data`。`503 INVALID_DASHBOARD_ORIGIN` 表示公開網址（或額外 Origin）
+不是精確 Origin；`ORIGIN_DENIED` 表示瀏覽器的 Origin 兩者都不是。修正 `hermes.env` 後再執行
+`scripts/install.sh`；不要關閉來源驗證。
 
 ## 映像
 
@@ -133,9 +182,10 @@ digest 釘在 `v0.22.5`，它已在自己的 dashboard OAuth 流程中轉送 RFC
 `iss-permissive.py` 修補已移除，MCP SDK 的 issuer 檢查也不再放寬：回傳不同 issuer 的 OAuth 伺服器必須修正其
 metadata，之後重新連接該整合。
 
-`tests/image-test.sh [IMAGE]` 不發布任何埠，啟動映像兩次 — 一次用全新 volume，一次用像 compose 堆疊留下的、
-uid 1000 擁有的 volume — 檢查 s6、dashboard、佈建、`.env` 合併、登入在重啟後仍有效、approval gate 與 scoped
-prompt GC。CI 無法建置映像，請在發佈前於本機執行。
+`tests/image-test.sh [IMAGE]` 不發布任何埠，分別以全新 volume、像 compose 堆疊留下的 uid 1000 volume，以及
+HTTPS 公開網址啟動映像，檢查 s6、dashboard、佈建、`.env` 合併、登入在重啟後仍有效、approval gate、scoped prompt
+GC，以及 Paseo 主機介面（權限降級、Origin、loopback 與 tunnel 登入、`INVALID_DASHBOARD_ORIGIN`）。CI 無法建置
+映像，請在發佈前於本機執行。請設定 `IMAGE_TEST_PREFIX`，讓它的容器與 volume 名稱不會和主機上其他東西衝突。
 
 ## 驗證
 
@@ -296,6 +346,7 @@ agent 以容器 uid **1000**（`HERMES_UID`）執行，而不是 v0.22.5 預設�
 ```
 container/Containerfile            映像：slim（對齊）與 full 兩個 target
 container/patches/                 與 HA add-on 共用的建置期修補，及其 PROVENANCE
+container/vendor/paseo/            Paseo 主機介面與 hermes 進入點（取自 HA add-on）
 container/rootfs/                  映像內佈建：cont-init hooks 與 /usr/local/bin/woow-provision
 container/fix-model-routes.py      冪等的 model route 修正，由 woow-provision 執行
 quadlet/                           帶 @@VAR@@ 標記的單元；quadlet/render-vars 為白名單
@@ -317,6 +368,9 @@ tests/smoke.sh                     主機上的安裝後檢查
 tests/lint-repo.sh                 憑證掃描、映像釘版一致性、確認不再有 live mutation（CI）
 tests/provisioning-test.sh         以真實 config 形狀驗證 fix-model-routes.py 的結束碼（CI）
 tests/rollback-model.sh            以 tests/shims 驗證回復模型、可寫層判斷與沿用驗證（CI）
+tests/resource-recreate.sh         在 systemd 之外被刪除的網路／volume 會重建（CI）
+tests/test-paseo-vendor.py         Paseo 主機介面的釘版與封裝（CI）
+tests/test-paseo-origin.py         額外 Paseo Origin 的驗證，開機 hook 與 install.sh 一致（CI）
 tests/shims/                       podman 與 systemctl 測試替身；不會建立任何容器
 docs/odoo-posting.md               原本放在 deploy/podman/SKILL.md 的 Odoo cron 筆記
 docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
@@ -334,3 +388,6 @@ docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 | 升級後 TUI 看起來是舊的 | TUI 直接從映像（`/opt/hermes/ui-tui`）執行，新映像就是新 TUI；重新整理頁面。`/opt/data/.woow-image-version` 記錄最後開機此 volume 的映像。 |
 | 少了某個以前 `deploy.sh` 會裝的工具 | 把它加進 `container/Containerfile` 後重建。依設計，現在不會再往執行中的容器安裝任何東西。 |
 | 登出或重開機後單元消失 | `loginctl show-user $USER -p Linger` 必須是 `yes`。 |
+| `unable to find network with name or ID hermes` | 網路在 systemd 之外被刪除（`podman system reset`、`podman network rm`），但 `hermes-network.service` 仍是 active。再執行一次 `scripts/install.sh`：它會重啟該單元與容器。以同樣方式消失的 volume 會以**空的**重建並發出警告，請用 `scripts/restore.sh` 還原。 |
+| Paseo 顯示 `INVALID_DASHBOARD_ORIGIN` 或 `ORIGIN_DENIED` | 見 [Paseo](#paseo)：公開網址必須是瀏覽器網址列的精確 Origin。 |
+| 容器開機時停止並顯示 `Invalid HERMES_PASEO_EXTRA_ORIGIN` | 修正 `hermes.env` 的值（scheme://host[:port]，不含路徑），再執行會先驗證它的 `scripts/install.sh`。 |
