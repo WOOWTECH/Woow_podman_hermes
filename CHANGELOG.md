@@ -11,6 +11,11 @@ All notable changes to the WoowTech Hermes Agent deployment package.
 - **Omnigent plugin pin** moved again, from `4f2bec4` to `d5dd277`. `4f2bec4` let a background review in
   an Omnigent session change the profile's skills without a main ledger entry; sessions now run with
   background review off.
+- **Omnigent plugin pin** moved to `29dcd4e`, the release `v0.1.0-rc.18`. The first message of every new
+  Omnigent session used to be lost and only a retry got it through, so on a slow host the first pairing
+  check failed. Hermes' first-run "Help improve Hermes?" question answered the pasted message, and the
+  bridge pasted before the TUI was ready; both are fixed in the plugin. The README text that named
+  `0.1.0-rc.16` now names the pinned version.
 
 ## [0.23.1-quadlet] - 2026-11-06
 
