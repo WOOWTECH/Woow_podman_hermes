@@ -280,7 +280,7 @@ Install and pair:
    enable. Hermes warns `custom (unreviewed) source`, the usual note for anything outside its
    catalog; if the page also shows a caution about running processes, review it as for Paseo. Pinned
    from the CLI (full commit SHA, not a tag):
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 4f2bec48de9f43d1ac9695d9573592252b2982ce --enable`
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref d5dd2771c4aba4262d14a2d8c12c36f96e8506dd --enable`
    (on 2026-11-06 this CLI install printed nothing beyond that note, so `--force` was not needed).
 3. Pair from the host, because the panel has no direct-execution checkbox here:
 

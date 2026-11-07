@@ -8,6 +8,9 @@ All notable changes to the WoowTech Hermes Agent deployment package.
 - **Omnigent plugin pin** in the READMEs moved from `6c86ebb` to `4f2bec4`. Omnigent sessions now see
   the profile's MCP servers and skills, and slash commands no longer run twice or show a false
   delivery error. The plugin version string is still `0.1.0-rc.16`, so the pin is what tells them apart.
+- **Omnigent plugin pin** moved again, from `4f2bec4` to `d5dd277`. `4f2bec4` let a background review in
+  an Omnigent session change the profile's skills without a main ledger entry; sessions now run with
+  background review off.
 
 ## [0.23.1-quadlet] - 2026-11-06
 
