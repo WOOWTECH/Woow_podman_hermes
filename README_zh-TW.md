@@ -246,7 +246,7 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 2. Dashboard → **Plugins** → *Git URL or owner/repo*：`WOOWTECH/hermes-omnigent-plugin`，安裝並啟用。Hermes
    會警告 `custom (unreviewed) source`，這是非官方目錄來源的一般提示；若頁面另外顯示執行程序的 caution，處理方式同 Paseo。以 CLI 釘版安裝（完整 commit SHA，
    不能用 tag）：
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 4f2bec48de9f43d1ac9695d9573592252b2982ce --enable`
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref d5dd2771c4aba4262d14a2d8c12c36f96e8506dd --enable`
    （2026-11-06 這個 CLI 安裝除上述提示外沒有其他輸出，不需要 `--force`）。
 3. 由於這裡的面板沒有直接執行勾選框，請從主機配對：
 
