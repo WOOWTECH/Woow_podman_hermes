@@ -236,7 +236,7 @@ exact origin; `ORIGIN_DENIED` means the browser's origin is neither of them. Fix
 
 ### Omnigent
 
-The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.16`, Omnigent
+The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.18`, Omnigent
 `0.20.0`) connects this Hermes to an Omnigent server, so Omnigent conversations can run on this host.
 As on Home Assistant it is **optional**: not bundled, not installed or enabled by an upgrade.
 
@@ -280,7 +280,7 @@ Install and pair:
    enable. Hermes warns `custom (unreviewed) source`, the usual note for anything outside its
    catalog; if the page also shows a caution about running processes, review it as for Paseo. Pinned
    from the CLI (full commit SHA, not a tag):
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref d5dd2771c4aba4262d14a2d8c12c36f96e8506dd --enable`
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 29dcd4e35ab2807dffcc97938f23978e216bcb60 --enable`
    (on 2026-11-06 this CLI install printed nothing beyond that note, so `--force` was not needed).
 3. Pair from the host, because the panel has no direct-execution checkbox here:
 

@@ -209,7 +209,7 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 
 ### Omnigent
 
-[Omnigent 插件](https://github.com/WOOWTECH/hermes-omnigent-plugin)（`0.1.0-rc.16`，Omnigent `0.20.0`）讓
+[Omnigent 插件](https://github.com/WOOWTECH/hermes-omnigent-plugin)（`0.1.0-rc.18`，Omnigent `0.20.0`）讓
 這個 Hermes 連到 Omnigent server，在這台主機上執行 Omnigent 對話。與 Home Assistant 相同，它是**選用**的：
 不隨映像附帶，升級也不會安裝或啟用它。
 
@@ -246,7 +246,7 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 2. Dashboard → **Plugins** → *Git URL or owner/repo*：`WOOWTECH/hermes-omnigent-plugin`，安裝並啟用。Hermes
    會警告 `custom (unreviewed) source`，這是非官方目錄來源的一般提示；若頁面另外顯示執行程序的 caution，處理方式同 Paseo。以 CLI 釘版安裝（完整 commit SHA，
    不能用 tag）：
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref d5dd2771c4aba4262d14a2d8c12c36f96e8506dd --enable`
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 29dcd4e35ab2807dffcc97938f23978e216bcb60 --enable`
    （2026-11-06 這個 CLI 安裝除上述提示外沒有其他輸出，不需要 `--force`）。
 3. 由於這裡的面板沒有直接執行勾選框，請從主機配對：
 
