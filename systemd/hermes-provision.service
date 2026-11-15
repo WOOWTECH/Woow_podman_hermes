@@ -17,8 +17,8 @@ PartOf=hermes-agent.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/podman exec hermes-agent /usr/local/bin/woow-provision --wait 300
-TimeoutStartSec=420
+ExecStart=/usr/bin/podman exec hermes-agent /usr/local/bin/woow-provision --wait 900
+TimeoutStartSec=1020
 
 [Install]
 WantedBy=hermes-agent.service
