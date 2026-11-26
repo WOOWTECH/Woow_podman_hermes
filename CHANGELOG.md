@@ -5,6 +5,12 @@ All notable changes to the WoowTech Hermes Agent deployment package.
 ## [Unreleased]
 
 ### Changed
+- **Optional plugin release pins** now name Paseo `v0.1.5-rc.3` at
+  `7b9c88d032672f688c88df222e384ce3bc1af2f2` and Omnigent `v0.1.0-rc.21` at
+  `84e0c41ce91594908a53c91fcff09123ca92f626`. The four Paseo host-adapter files are byte-identical;
+  only reviewed provenance changes. The documented normal install/update flow does not use `--force`,
+  so existing state, login and consent are preserved and pairing remains explicit. Paseo stays on the
+  Hermes-compatible runtime `0.11.2-r3-523d451cc096`, not incompatible `0.17.4`.
 - **Omnigent plugin pin** in the READMEs moved from `6c86ebb` to `4f2bec4`. Omnigent sessions now see
   the profile's MCP servers and skills, and slash commands no longer run twice or show a false
   delivery error. The plugin version string is still `0.1.0-rc.16`, so the pin is what tells them apart.

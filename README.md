@@ -199,7 +199,7 @@ access policy in front of the tunnel.
 
 The image carries the Paseo host adapter from the HA add-on (`container/vendor/paseo`, the reviewed
 `host/` directory of [hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin)
-`0.1.4-rc.9`, hashes in `PROVENANCE.json`). It lets an enabled Paseo plugin reload the dashboard and
+`0.1.5-rc.3`, hashes in `PROVENANCE.json`). It lets an enabled Paseo plugin reload the dashboard and
 stop its daemon before the plugin is disabled or removed. The plugin itself is **not** bundled: you
 install it from the dashboard, and nothing is installed or enabled by an upgrade.
 
@@ -216,10 +216,17 @@ Requirements:
 Steps after `install.sh` (or `upgrade.sh`):
 
 1. Open the dashboard **from the public URL** (or from `HERMES_PASEO_EXTRA_ORIGIN`) and log in.
-2. **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-paseo-plugin`. Install the current release
-   (`0.1.4-rc.9`; when scripting the Plugins API, the ref must be the full commit SHA
-   `1101a5da63178e08bd0fdf849db8e2a5de4d6ef1`, not a tag) and enable it. The source is public; no
-   GitHub token is needed. Review the source and the permissions note before confirming the caution prompt.
+2. **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-paseo-plugin`. Install and enable only after
+   reviewing the source and permissions prompt. For a reproducible install or update, use the released
+   `0.1.5-rc.3` commit (full SHA, not a tag):
+
+   ```bash
+   podman exec hermes-agent hermes plugins install WOOWTECH/hermes-paseo-plugin --ref 7b9c88d032672f688c88df222e384ce3bc1af2f2 --enable
+   ```
+
+   Do not add `--force`: a normal update preserves plugin state and consent; a forced reinstall can
+   intentionally invalidate them. The source is public, so no GitHub token is needed. This release keeps
+   Paseo runtime `0.11.2-r3-523d451cc096`; do not substitute runtime `0.17.4`, which is incompatible with Hermes.
 3. Open **Paseo**. The first start downloads the runtime; wait until the page says it is running.
    Hermes v0.22.5 loads a new plugin's backend on first use, so **Reload dashboard** is only needed
    when the page keeps saying the plugin API is not loaded.
@@ -236,7 +243,7 @@ exact origin; `ORIGIN_DENIED` means the browser's origin is neither of them. Fix
 
 ### Omnigent
 
-The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.18`, Omnigent
+The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.21`, Omnigent
 `0.20.0`) connects this Hermes to an Omnigent server, so Omnigent conversations can run on this host.
 As on Home Assistant it is **optional**: not bundled, not installed or enabled by an upgrade.
 
@@ -280,8 +287,9 @@ Install and pair:
    enable. Hermes warns `custom (unreviewed) source`, the usual note for anything outside its
    catalog; if the page also shows a caution about running processes, review it as for Paseo. Pinned
    from the CLI (full commit SHA, not a tag):
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 29dcd4e35ab2807dffcc97938f23978e216bcb60 --enable`
-   (on 2026-11-06 this CLI install printed nothing beyond that note, so `--force` was not needed).
+   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 84e0c41ce91594908a53c91fcff09123ca92f626 --enable`.
+   Use the same command to update an existing installation. Do not add `--force`: normal Git updates
+   preserve the existing login and consent, while a forced reinstall intentionally requires pairing again.
 3. Pair from the host, because the panel has no direct-execution checkbox here:
 
    ```bash
