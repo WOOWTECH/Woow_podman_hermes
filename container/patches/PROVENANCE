@@ -36,8 +36,10 @@ Not vendored, and why:
 - patches/ha-exec-boundary.py, nginx/ingress, ws_relay, cookies: Home Assistant only. The Paseo host adapter
   is vendored in phase 2 (below).
 
-Phase 2 (Paseo), from the same commit d4cde4580840ae9b6e3d928427130190484223aa:
-3434010b9b620138fa645f9c01b12281809a3404a24aff3d2f4cbd3065bb1389  hermes/vendor/paseo/PROVENANCE.json -> container/vendor/paseo/PROVENANCE.json
+Phase 2 (Paseo): host files originally came through HA commit
+d4cde4580840ae9b6e3d928427130190484223aa; the provenance record is refreshed to the later exact
+plugin release below, whose host files remain byte-identical:
+eda58b3eacb08a637f141fcc0d7d0c5d44c1d6a48a1f8f1b1e5739df9a8759f4  hermes/vendor/paseo/PROVENANCE.json -> container/vendor/paseo/PROVENANCE.json
 542cb4cd394b6c1b068723dd68cb16cdb98a77f4e7147aab3632ae8f6968d01e  hermes/vendor/paseo/dashboard_control.py -> container/vendor/paseo/dashboard_control.py
 3768bc96572512eb8040231641fe16d39611dd9e8b16153c79d31584c0ab1b55  hermes/vendor/paseo/profile_lifecycle.py -> container/vendor/paseo/profile_lifecycle.py
 2195c5b2c5a88f6ddc81c24fe606b6a1911b1d7a2be6f48cc7eb86350f37512d  hermes/vendor/paseo/resource_limits.py -> container/vendor/paseo/resource_limits.py
@@ -47,7 +49,7 @@ a18e78b177fe287ac11beb4f0d9b4094c12efb4060d2f70527c6b7540bbe9c0c  hermes/rootfs/
 a36fd38c854436f044b3e8cf58d61dddd006722e2b8df30d3bb41c215ad507ae  hermes/test/test-paseo-vendor.py -> tests/test-paseo-vendor.py (changed, below)
 79b3fbd1ef71c1d37552ff3cc4150a8b0a39b0fc50b8aa7ddd002a206137941a  hermes/test/test-paseo-origin.py -> tests/test-paseo-origin.py (changed, below)
 The adapter is the reviewed host/ directory of https://github.com/WOOWTECH/hermes-paseo-plugin at
-1101a5da63178e08bd0fdf849db8e2a5de4d6ef1 (0.1.4-rc.9), byte-identical to that commit and to the HA copy;
+7b9c88d032672f688c88df222e384ce3bc1af2f2 (0.1.5-rc.3), byte-identical to that commit and to the HA copy;
 container/vendor/paseo/PROVENANCE.json carries the per-file hashes tests/test-paseo-vendor.py checks.
 
 Local changes (Paseo):

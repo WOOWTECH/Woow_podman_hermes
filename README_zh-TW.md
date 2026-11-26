@@ -175,10 +175,10 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 此時 dashboard 自己的登入就是 agent 前唯一的關卡：能連到 tunnel 的人都能嘗試密碼。請保持
 `hermes-dashboard-password` 夠長（自動產生的即可），並考慮在 tunnel 前加上存取政策。
 
-### Paseo
+### Agent Connect（Paseo 協定）
 
 映像內含取自 HA add-on 的 Paseo 主機介面（`container/vendor/paseo`，即
-[hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin) `0.1.4-rc.9` 經審查的 `host/` 目錄，
+[hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin) `0.1.5-rc.3` 經審查的 `host/` 目錄，
 雜湊見 `PROVENANCE.json`）。它讓已啟用的 Paseo 插件能重載 dashboard，並在插件停用或移除前先停止它的 daemon。
 插件本身**不隨映像附帶**：由使用者在 dashboard 安裝，升級也不會自動安裝或啟用。
 
@@ -193,12 +193,34 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 `install.sh`（或 `upgrade.sh`）之後的步驟：
 
 1. **從公開網址**（或 `HERMES_PASEO_EXTRA_ORIGIN`）開啟 dashboard 並登入。
-2. **Plugins** → *Git URL or owner/repo* 填 `WOOWTECH/hermes-paseo-plugin`，安裝目前的版本（`0.1.4-rc.9`；以
-   程式呼叫 Plugins API 時 ref 必須是完整 commit SHA `1101a5da63178e08bd0fdf849db8e2a5de4d6ef1`，不能用 tag）並
-   啟用。來源為公開 GitHub，不需要 GitHub token。確認 caution 提示前，先核對來源與權限說明。
-3. 點 **Paseo**。首次啟動會下載 runtime，請等頁面顯示已啟動。Hermes v0.22.5 會在第一次使用時載入新插件的後端，
+2. **Plugins** → *Git URL or owner/repo* 填 `WOOWTECH/hermes-paseo-plugin`；核對來源與權限提示後才安裝並啟用。
+   要可重現地**新安裝**，請以 Hermes 服務使用者和已發布 `0.1.5-rc.3` 的完整 commit SHA（不能用 tag）執行：
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data --workdir /opt/data \
+     hermes-agent hermes plugins install WOOWTECH/hermes-paseo-plugin \
+     --ref 7b9c88d032672f688c88df222e384ce3bc1af2f2 --enable
+   ```
+
+   Hermes 0.22.5 再執行一次安裝命令**不會更新**既有 checkout，而會回報 `already_installed`。更新前先用
+   `/paseo stop` 停止 Agent Connect，要求 tracked tree 乾淨，再把同一個 checkout fast-forward 到審查過的 commit：
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+     --workdir /opt/data/plugins/hermes-paseo hermes-agent sh -euc '
+       test -z "$(git status --porcelain --untracked-files=no)"
+       git fetch origin 7b9c88d032672f688c88df222e384ce3bc1af2f2
+       git merge --ff-only FETCH_HEAD
+       test "$(git rev-parse HEAD)" = 7b9c88d032672f688c88df222e384ce3bc1af2f2
+     '
+   ```
+
+   接著從 Agent Connect 重載 Dashboard，必要時重新啟用／啟動。不要用 `plugins install --force`：它會替換 checkout，
+   並刻意使與安裝身分綁定的狀態失效。公開來源不需要 GitHub token。此版本固定 Paseo runtime
+   `0.11.2-r3-523d451cc096`；不要改用與 Hermes 不相容的 `0.17.4`。
+3. 點 **Agent Connect**。首次啟動會下載 Paseo runtime，請等頁面顯示已啟動。Hermes v0.22.5 會在第一次使用時載入新插件的後端，
    只有頁面持續顯示插件 API 尚未載入時才需要按 **重載 Dashboard**。
-4. 產生配對連結，點 **開啟 Paseo**，在官方介面按 **Connect**。配對連結具有存取能力，請勿公開。新裝置請先新增
+4. 產生配對連結，點 **開啟 Agent Connect**，在 Paseo 官方介面按 **Connect**。配對連結具有存取能力，請勿公開。新裝置請先新增
    project（**Add project → New directory**，父目錄 `/opt/data`）。
 5. **New workspace**，選 project、Hermes、已登入的模型，再按 **Create**。
 
@@ -209,7 +231,7 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
 
 ### Omnigent
 
-[Omnigent 插件](https://github.com/WOOWTECH/hermes-omnigent-plugin)（`0.1.0-rc.18`，Omnigent `0.20.0`）讓
+[Omnigent 插件](https://github.com/WOOWTECH/hermes-omnigent-plugin)（`0.1.0-rc.21`，Omnigent `0.20.0`）讓
 這個 Hermes 連到 Omnigent server，在這台主機上執行 Omnigent 對話。與 Home Assistant 相同，它是**選用**的：
 不隨映像附帶，升級也不會安裝或啟用它。
 
@@ -245,9 +267,29 @@ Origin 檢查。所以 `http://127.0.0.1:19119`（或 `ssh -L`）與 `https://he
    dashboard 輸入）：Omnigent 的對話讀 `/opt/data/.env`，不讀容器環境變數。
 2. Dashboard → **Plugins** → *Git URL or owner/repo*：`WOOWTECH/hermes-omnigent-plugin`，安裝並啟用。Hermes
    會警告 `custom (unreviewed) source`，這是非官方目錄來源的一般提示；若頁面另外顯示執行程序的 caution，處理方式同 Paseo。以 CLI 釘版安裝（完整 commit SHA，
-   不能用 tag）：
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 29dcd4e35ab2807dffcc97938f23978e216bcb60 --enable`
-   （2026-11-06 這個 CLI 安裝除上述提示外沒有其他輸出，不需要 `--force`）。
+   不能用 tag），新安裝請執行：
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data --workdir /opt/data \
+     hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin \
+     --ref 84e0c41ce91594908a53c91fcff09123ca92f626 --enable
+   ```
+
+   Hermes 0.22.5 再執行安裝命令不是更新。既有安裝須要求 tracked tree 乾淨，再把同一 checkout fast-forward；
+   這樣不會換掉 Omnigent 的安裝身分：
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+     --workdir /opt/data/plugins/hermes-omnigent hermes-agent sh -euc '
+       test -z "$(git status --porcelain --untracked-files=no)"
+       git fetch origin 84e0c41ce91594908a53c91fcff09123ca92f626
+       git merge --ff-only FETCH_HEAD
+       test "$(git rev-parse HEAD)" = 84e0c41ce91594908a53c91fcff09123ca92f626
+     '
+   ```
+
+   使用 Omnigent 前先重載 Dashboard。Omnigent 絕不可用 `plugins install --force` 更新：替換 checkout 會建立新的
+   安裝身分，必須重新登入並重新同意直接執行。
 3. 由於這裡的面板沒有直接執行勾選框，請從主機配對：
 
    ```bash

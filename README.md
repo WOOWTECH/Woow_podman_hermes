@@ -195,11 +195,11 @@ The dashboard's own login is then the only gate in front of the agent: anyone wh
 can try the password. Keep `hermes-dashboard-password` long (the generated one is), and consider an
 access policy in front of the tunnel.
 
-### Paseo
+### Agent Connect (Paseo protocol)
 
 The image carries the Paseo host adapter from the HA add-on (`container/vendor/paseo`, the reviewed
 `host/` directory of [hermes-paseo-plugin](https://github.com/WOOWTECH/hermes-paseo-plugin)
-`0.1.4-rc.9`, hashes in `PROVENANCE.json`). It lets an enabled Paseo plugin reload the dashboard and
+`0.1.5-rc.3`, hashes in `PROVENANCE.json`). It lets an enabled Paseo plugin reload the dashboard and
 stop its daemon before the plugin is disabled or removed. The plugin itself is **not** bundled: you
 install it from the dashboard, and nothing is installed or enabled by an upgrade.
 
@@ -216,14 +216,38 @@ Requirements:
 Steps after `install.sh` (or `upgrade.sh`):
 
 1. Open the dashboard **from the public URL** (or from `HERMES_PASEO_EXTRA_ORIGIN`) and log in.
-2. **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-paseo-plugin`. Install the current release
-   (`0.1.4-rc.9`; when scripting the Plugins API, the ref must be the full commit SHA
-   `1101a5da63178e08bd0fdf849db8e2a5de4d6ef1`, not a tag) and enable it. The source is public; no
-   GitHub token is needed. Review the source and the permissions note before confirming the caution prompt.
-3. Open **Paseo**. The first start downloads the runtime; wait until the page says it is running.
+2. **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-paseo-plugin`. Install and enable only after
+   reviewing the source and permissions prompt. For a reproducible **new install**, use the released
+   `0.1.5-rc.3` commit (full SHA, not a tag) as the Hermes service user:
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data --workdir /opt/data \
+     hermes-agent hermes plugins install WOOWTECH/hermes-paseo-plugin \
+     --ref 7b9c88d032672f688c88df222e384ce3bc1af2f2 --enable
+   ```
+
+   On Hermes 0.22.5, running that install command again does **not** update an existing checkout: it
+   returns `already_installed`. To update without replacing the checkout, first stop Agent Connect with
+   `/paseo stop`, require a clean tracked tree, then fast-forward it to the reviewed commit:
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+     --workdir /opt/data/plugins/hermes-paseo hermes-agent sh -euc '
+       test -z "$(git status --porcelain --untracked-files=no)"
+       git fetch origin 7b9c88d032672f688c88df222e384ce3bc1af2f2
+       git merge --ff-only FETCH_HEAD
+       test "$(git rev-parse HEAD)" = 7b9c88d032672f688c88df222e384ce3bc1af2f2
+     '
+   ```
+
+   Then reload the Dashboard from Agent Connect and re-enable/start it if needed. Do not use
+   `plugins install --force`: that replaces the checkout and intentionally invalidates installation-bound
+   state. The source is public, so no GitHub token is needed. This release keeps Paseo runtime
+   `0.11.2-r3-523d451cc096`; do not substitute runtime `0.17.4`, which is incompatible with Hermes.
+3. Open **Agent Connect**. The first start downloads the Paseo runtime; wait until the page says it is running.
    Hermes v0.22.5 loads a new plugin's backend on first use, so **Reload dashboard** is only needed
    when the page keeps saying the plugin API is not loaded.
-4. Generate the pairing link, **Open Paseo**, and **Connect** in the official app. The pairing link
+4. Generate the pairing link, **Open Agent Connect**, and **Connect** in the official Paseo app. The pairing link
    grants access: do not post it anywhere. On a new device add a project first
    (**Add project → New directory**, parent `/opt/data`).
 5. **New workspace**, pick the project, the Hermes provider, a logged-in model, then **Create**.
@@ -236,7 +260,7 @@ exact origin; `ORIGIN_DENIED` means the browser's origin is neither of them. Fix
 
 ### Omnigent
 
-The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.18`, Omnigent
+The [Omnigent plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) (`0.1.0-rc.21`, Omnigent
 `0.20.0`) connects this Hermes to an Omnigent server, so Omnigent conversations can run on this host.
 As on Home Assistant it is **optional**: not bundled, not installed or enabled by an upgrade.
 
@@ -279,9 +303,29 @@ Install and pair:
 2. Dashboard → **Plugins** → *Git URL or owner/repo*: `WOOWTECH/hermes-omnigent-plugin`, install and
    enable. Hermes warns `custom (unreviewed) source`, the usual note for anything outside its
    catalog; if the page also shows a caution about running processes, review it as for Paseo. Pinned
-   from the CLI (full commit SHA, not a tag):
-   `podman exec hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin --ref 29dcd4e35ab2807dffcc97938f23978e216bcb60 --enable`
-   (on 2026-11-06 this CLI install printed nothing beyond that note, so `--force` was not needed).
+   for a new install from the CLI (full commit SHA, not a tag):
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data --workdir /opt/data \
+     hermes-agent hermes plugins install WOOWTECH/hermes-omnigent-plugin \
+     --ref 84e0c41ce91594908a53c91fcff09123ca92f626 --enable
+   ```
+
+   Re-running the install is not an update on Hermes 0.22.5. For an existing installation, require a
+   clean tracked tree and fast-forward the same checkout; this keeps Omnigent's installation fingerprint:
+
+   ```bash
+   podman exec --user hermes --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+     --workdir /opt/data/plugins/hermes-omnigent hermes-agent sh -euc '
+       test -z "$(git status --porcelain --untracked-files=no)"
+       git fetch origin 84e0c41ce91594908a53c91fcff09123ca92f626
+       git merge --ff-only FETCH_HEAD
+       test "$(git rev-parse HEAD)" = 84e0c41ce91594908a53c91fcff09123ca92f626
+     '
+   ```
+
+   Reload the Dashboard before using Omnigent. Never update Omnigent with `plugins install --force`:
+   replacement creates a new installation identity and requires fresh login and direct-execution consent.
 3. Pair from the host, because the panel has no direct-execution checkbox here:
 
    ```bash
